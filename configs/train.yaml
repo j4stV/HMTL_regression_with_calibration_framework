@@ -1,0 +1,22 @@
+optimizer:
+  name: radam_lookahead
+  lr: 0.0003
+  lookahead_sync_period: 6
+  lookahead_slow_step: 0.5
+  weight_decay: 0.0005
+
+training:
+  seed: 42
+  epochs: 100
+  batch_size: 1024
+  sigma_reg_weight: 0.05  # регуляризация для предотвращения взрыва sigma
+  early_stop:
+    metric: r_auc_mse
+    patience: 10
+    mode: min
+
+logging:
+  mlflow:
+    enabled: false
+    tracking_uri: null
+  save.dir: experiments/runs

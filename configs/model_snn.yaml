@@ -1,0 +1,21 @@
+encoder:
+  input_dim: null  # будет заполнено автоматически
+  hidden_width: 256
+  depth_base: 12
+  depth_hmtl: 16
+  alpha_dropout: 0.005
+  activation: SELU
+  init: lecun
+
+hmtl:
+  enabled: true
+  aux_task: bins  # bins or n_pairs
+  low_layer: 8 
+  high_layer: 14  
+  lambda_aux: 0.15 
+  n_bins: 5 
+
+regression_head:
+  out_mu: 1
+  out_sigma: 1
+  sigma_max: 3.0

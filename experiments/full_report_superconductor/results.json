@@ -1,0 +1,86 @@
+{
+  "timestamp": "2025-12-04T01:25:22.646532",
+  "main_experiment": {
+    "plots_dir": null
+  },
+  "multi_seed": null,
+  "baselines": {
+    "comparison_table": [
+      {
+        "Model": "single_mlp",
+        "RMSE": 0.624756546208256,
+        "MSE": 0.3903207420300688,
+        "MAE": 0.4545479762784293,
+        "R-AUC MSE": 0.1392739785438787,
+        "Mean Uncertainty": 0.4315267503261566,
+        "Coverage@80": 0.0,
+        "Coverage@90": 0.0,
+        "Coverage@95": 0.0,
+        "Rejection Ratio (%)": 70.82771674831073,
+        "Rejection AUC": 0.0954364945863744,
+        "F-Beta AUC": 0.6001794791731581,
+        "F-Beta@95": 0.6824521569447627
+      },
+      {
+        "Model": "flat_mtl",
+        "RMSE": 0.679206888585135,
+        "MSE": 0.4613219975015,
+        "MAE": 0.4930100141960655,
+        "R-AUC MSE": 0.1734433414832638,
+        "Mean Uncertainty": 0.2190887033939361,
+        "Coverage@80": 0.0,
+        "Coverage@90": 0.0,
+        "Coverage@95": 0.0,
+        "Rejection Ratio (%)": 70.24913152290824,
+        "Rejection AUC": 0.1135395112491745,
+        "F-Beta AUC": 0.5931551144752116,
+        "F-Beta@95": 0.6805060006035367
+      },
+      {
+        "Model": "catboost",
+        "RMSE": 0.3431507108855613,
+        "MSE": 0.1177524103812661,
+        "MAE": 0.223610237639099,
+        "R-AUC MSE": 0.0300009021779522,
+        "Mean Uncertainty": 0.1060929511991207,
+        "Coverage@80": 0.8000940733772343,
+        "Coverage@90": 0.9002822201317028,
+        "Coverage@95": 0.9501411100658512,
+        "Rejection Ratio (%)": 77.55577164077596,
+        "Rejection AUC": 0.0223265900998927,
+        "F-Beta AUC": 0.6297116730511436,
+        "F-Beta@95": 0.6843983132859887
+      },
+      {
+        "Model": "hmtl",
+        "RMSE": 0.5071362179326765,
+        "MSE": 0.2571871435390592,
+        "MAE": 0.3493425836152908,
+        "R-AUC MSE": 0.0821324981116716,
+        "Mean Uncertainty": 24.598234176635746,
+        "Coverage@80": 0.7996237064910631,
+        "Coverage@90": 0.9002822201317028,
+        "Coverage@95": 0.94967074317968,
+        "Rejection Ratio (%)": 68.78795318001184,
+        "Rejection AUC": 0.0610957444366121,
+        "F-Beta AUC": 0.6231869120081573,
+        "F-Beta@95": 0.6779111254819018
+      }
+    ],
+    "best_models": {
+      "RMSE": {
+        "model": "catboost",
+        "value": 0.3431507108855613
+      },
+      "R-AUC MSE": {
+        "model": "catboost",
+        "value": 0.0300009021779522
+      },
+      "MAE": {
+        "model": "catboost",
+        "value": 0.223610237639099
+      }
+    }
+  },
+  "ablation": null
+}

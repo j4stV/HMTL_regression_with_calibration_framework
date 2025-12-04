@@ -1,0 +1,4 @@
+ensemble:
+  n_models: 5
+  bagging: bootstrap  # Options: "stratified_bins" or "bootstrap"
+  val_metric: r_auc_mse

@@ -1,0 +1,6 @@
+winequality-red.csv
+docs/
+catboost_info/
+tools/
+__pycache__/
+logs/

@@ -1,0 +1,18 @@
+paths:
+  train_csv: data/train.csv
+  valid_csv: data/valid.csv
+  cal_csv: null  # Optional: separate calibration set. If null, validation set is used for calibration
+  test_csv: data/test.csv
+  target: quality
+
+preprocess:
+  impute_const: -1
+  quantile_binning:
+    enabled: true
+    bins: 5
+  standardize: true
+  pca:
+    enabled: true
+    n_components: 0.95
+  target_standardize: true
+
