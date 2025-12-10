@@ -38,103 +38,103 @@ This report summarizes the results of comprehensive experiments on Hierarchical 
 
 ### Ключевые графики
 
-![Error-Retention (валидация)](experiments/full_report_superconductor/main/plots/val_error_retention.png)
+![Error-Retention (валидация)](main/plots/val_error_retention.png)
 
-![Rejection Curve (валидация)](experiments/full_report_superconductor/main/plots/val_rejection_curve.png)
+![Rejection Curve (валидация)](main/plots/val_rejection_curve.png)
 
-![Retention vs Rejection (валидация)](experiments/full_report_superconductor/main/plots/val_retention_vs_rejection.png)
+![Retention vs Rejection (валидация)](main/plots/val_retention_vs_rejection.png)
 
-![Calibration Curve (валидация)](experiments/full_report_superconductor/main/plots/val_calibration.png)
+![Calibration Curve (валидация)](main/plots/val_calibration.png)
 
-![Calibration before/after conformal (валидация)](experiments/full_report_superconductor/main/plots/val_calibration_before_after.png)
+![Calibration before/after conformal (валидация)](main/plots/val_calibration_before_after.png)
 
-![Residual histogram (валидация)](experiments/full_report_superconductor/main/plots/val_residual_hist.png)
+![Residual histogram (валидация)](main/plots/val_residual_hist.png)
 
-![Residual QQ (валидация)](experiments/full_report_superconductor/main/plots/val_residual_qq.png)
+![Residual QQ (валидация)](main/plots/val_residual_qq.png)
 
-![Residual vs pred (валидация)](experiments/full_report_superconductor/main/plots/val_residual_vs_pred.png)
+![Residual vs pred (валидация)](main/plots/val_residual_vs_pred.png)
 
-![Residual vs uncertainty (валидация)](experiments/full_report_superconductor/main/plots/val_residual_vs_uncertainty.png)
+![Residual vs uncertainty (валидация)](main/plots/val_residual_vs_uncertainty.png)
 
-![|error| vs uncertainty (валидация)](experiments/full_report_superconductor/main/plots/val_uncertainty_vs_error.png)
+![|error| vs uncertainty (валидация)](main/plots/val_uncertainty_vs_error.png)
 
-![Uncertainty by error quantile (валидация)](experiments/full_report_superconductor/main/plots/val_uncertainty_by_error_quantile.png)
+![Uncertainty by error quantile (валидация)](main/plots/val_uncertainty_by_error_quantile.png)
 
-![PI width dist @80%](experiments/full_report_superconductor/main/plots/val_pi_width_80.png)
+![PI width dist @80%](main/plots/val_pi_width_80.png)
 
-![PI width dist @90%](experiments/full_report_superconductor/main/plots/val_pi_width_90.png)
+![PI width dist @90%](main/plots/val_pi_width_90.png)
 
-![PI width dist @95%](experiments/full_report_superconductor/main/plots/val_pi_width_95.png)
+![PI width dist @95%](main/plots/val_pi_width_95.png)
 
-![Error-Retention (тест)](experiments/full_report_superconductor/main/plots/test_error_retention.png)
+![Error-Retention (тест)](main/plots/test_error_retention.png)
 
-![Rejection Curve (тест)](experiments/full_report_superconductor/main/plots/test_rejection_curve.png)
+![Rejection Curve (тест)](main/plots/test_rejection_curve.png)
 
-![Retention vs Rejection (тест)](experiments/full_report_superconductor/main/plots/test_retention_vs_rejection.png)
+![Retention vs Rejection (тест)](main/plots/test_retention_vs_rejection.png)
 
-![Calibration Curve (тест)](experiments/full_report_superconductor/main/plots/test_calibration.png)
+![Calibration Curve (тест)](main/plots/test_calibration.png)
 
-![Calibration before/after conformal (тест)](experiments/full_report_superconductor/main/plots/test_calibration_before_after.png)
+![Calibration before/after conformal (тест)](main/plots/test_calibration_before_after.png)
 
-![Residual histogram (тест)](experiments/full_report_superconductor/main/plots/test_residual_hist.png)
+![Residual histogram (тест)](main/plots/test_residual_hist.png)
 
-![Residual QQ (тест)](experiments/full_report_superconductor/main/plots/test_residual_qq.png)
+![Residual QQ (тест)](main/plots/test_residual_qq.png)
 
-![Residual vs pred (тест)](experiments/full_report_superconductor/main/plots/test_residual_vs_pred.png)
+![Residual vs pred (тест)](main/plots/test_residual_vs_pred.png)
 
-![Residual vs uncertainty (тест)](experiments/full_report_superconductor/main/plots/test_residual_vs_uncertainty.png)
+![Residual vs uncertainty (тест)](main/plots/test_residual_vs_uncertainty.png)
 
-![|error| vs uncertainty (тест)](experiments/full_report_superconductor/main/plots/test_uncertainty_vs_error.png)
+![|error| vs uncertainty (тест)](main/plots/test_uncertainty_vs_error.png)
 
-![Uncertainty by error quantile (тест)](experiments/full_report_superconductor/main/plots/test_uncertainty_by_error_quantile.png)
+![Uncertainty by error quantile (тест)](main/plots/test_uncertainty_by_error_quantile.png)
 
-![PI width dist @80% (тест)](experiments/full_report_superconductor/main/plots/test_pi_width_80.png)
+![PI width dist @80% (тест)](main/plots/test_pi_width_80.png)
 
-![PI width dist @90% (тест)](experiments/full_report_superconductor/main/plots/test_pi_width_90.png)
+![PI width dist @90% (тест)](main/plots/test_pi_width_90.png)
 
-![PI width dist @95% (тест)](experiments/full_report_superconductor/main/plots/test_pi_width_95.png)
+![PI width dist @95% (тест)](main/plots/test_pi_width_95.png)
 
 ### Кривые обучения ансамбля HMTL
 
-![Training model_10_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_10_training_curve.png)
+![Training model_10_training_curve.png](main/plots/training/model_10_training_curve.png)
 
-![Training model_11_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_11_training_curve.png)
+![Training model_11_training_curve.png](main/plots/training/model_11_training_curve.png)
 
-![Training model_12_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_12_training_curve.png)
+![Training model_12_training_curve.png](main/plots/training/model_12_training_curve.png)
 
-![Training model_13_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_13_training_curve.png)
+![Training model_13_training_curve.png](main/plots/training/model_13_training_curve.png)
 
-![Training model_14_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_14_training_curve.png)
+![Training model_14_training_curve.png](main/plots/training/model_14_training_curve.png)
 
-![Training model_15_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_15_training_curve.png)
+![Training model_15_training_curve.png](main/plots/training/model_15_training_curve.png)
 
-![Training model_16_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_16_training_curve.png)
+![Training model_16_training_curve.png](main/plots/training/model_16_training_curve.png)
 
-![Training model_17_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_17_training_curve.png)
+![Training model_17_training_curve.png](main/plots/training/model_17_training_curve.png)
 
-![Training model_18_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_18_training_curve.png)
+![Training model_18_training_curve.png](main/plots/training/model_18_training_curve.png)
 
-![Training model_19_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_19_training_curve.png)
+![Training model_19_training_curve.png](main/plots/training/model_19_training_curve.png)
 
-![Training model_1_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_1_training_curve.png)
+![Training model_1_training_curve.png](main/plots/training/model_1_training_curve.png)
 
-![Training model_20_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_20_training_curve.png)
+![Training model_20_training_curve.png](main/plots/training/model_20_training_curve.png)
 
-![Training model_2_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_2_training_curve.png)
+![Training model_2_training_curve.png](main/plots/training/model_2_training_curve.png)
 
-![Training model_3_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_3_training_curve.png)
+![Training model_3_training_curve.png](main/plots/training/model_3_training_curve.png)
 
-![Training model_4_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_4_training_curve.png)
+![Training model_4_training_curve.png](main/plots/training/model_4_training_curve.png)
 
-![Training model_5_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_5_training_curve.png)
+![Training model_5_training_curve.png](main/plots/training/model_5_training_curve.png)
 
-![Training model_6_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_6_training_curve.png)
+![Training model_6_training_curve.png](main/plots/training/model_6_training_curve.png)
 
-![Training model_7_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_7_training_curve.png)
+![Training model_7_training_curve.png](main/plots/training/model_7_training_curve.png)
 
-![Training model_8_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_8_training_curve.png)
+![Training model_8_training_curve.png](main/plots/training/model_8_training_curve.png)
 
-![Training model_9_training_curve.png](experiments/full_report_superconductor/main/plots/training/model_9_training_curve.png)
+![Training model_9_training_curve.png](main/plots/training/model_9_training_curve.png)
 
 
 ## 2. Multi-Seed Experiments
@@ -174,11 +174,11 @@ This report summarizes the results of comprehensive experiments on Hierarchical 
 
 ### Визуализация по сиду
 
-![Multi-seed](experiments/full_report_superconductor/multi_seed/coverage_distributions.png)
+![Multi-seed](multi_seed/coverage_distributions.png)
 
-![Multi-seed](experiments/full_report_superconductor/multi_seed/error_retention_seeds.png)
+![Multi-seed](multi_seed/error_retention_seeds.png)
 
-![Multi-seed](experiments/full_report_superconductor/multi_seed/metric_distributions.png)
+![Multi-seed](multi_seed/metric_distributions.png)
 
 
 ## 3. Baseline Comparison
@@ -199,7 +199,7 @@ This report summarizes the results of comprehensive experiments on Hierarchical 
 - **Rejection AUC**: Площадь под кривой отбрасывания (rejection curve).
 - **F-Beta AUC**: Площадь под кривой F-beta для оценки качества неопределенности.
 
-![Baseline metrics](experiments/full_report_superconductor/baselines/baseline_comparison.png)
+![Baseline metrics](baselines/baseline_comparison.png)
 
 ### Best Models
 

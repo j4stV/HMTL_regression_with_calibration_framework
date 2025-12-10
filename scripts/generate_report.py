@@ -135,6 +135,14 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
     """Generate markdown report from collected results."""
     logger.info(f"Generating markdown report: {output_file}")
     
+    def get_relative_path(target_path: Path) -> str:
+        """Get relative path from output_file to target_path."""
+        try:
+            return str(target_path.relative_to(output_file.parent))
+        except ValueError:
+            # If paths are on different drives (Windows), return as_posix
+            return target_path.as_posix()
+    
     lines = []
     lines.append("# HMTL with Calibration - Experimental Report")
     lines.append("")
@@ -251,7 +259,7 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
             for fname, title in plot_defs:
                 candidate = plot_dir / fname
                 if candidate.exists():
-                    lines.append(f"![{title}]({candidate.as_posix()})")
+                    lines.append(f"![{title}]({get_relative_path(candidate)})")
                     lines.append("")
             
             # Training curves (ensemble models)
@@ -260,7 +268,7 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
                 lines.append("### Кривые обучения ансамбля HMTL")
                 lines.append("")
                 for img in sorted(training_dir.glob("model_*_training_curve.png")):
-                    lines.append(f"![Training {img.name}]({img.as_posix()})")
+                    lines.append(f"![Training {img.name}]({get_relative_path(img)})")
                     lines.append("")
         lines.append("")
     else:
@@ -326,7 +334,7 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
             lines.append("### Визуализация по сиду")
             lines.append("")
             for pf in multi_seed.get("plot_files", []):
-                lines.append(f"![Multi-seed]({Path(pf).as_posix()})")
+                lines.append(f"![Multi-seed]({get_relative_path(Path(pf))})")
                 lines.append("")
     else:
         lines.append("Multi-seed experiment results not found.")
@@ -381,15 +389,17 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
             if baselines.get("plot"):
                 plot_path = Path(baselines["plot"])
                 if plot_path.exists():
-                    lines.append(f"![Baseline metrics]({plot_path.as_posix()})")
+                    lines.append(f"![Baseline metrics]({get_relative_path(plot_path)})")
                     lines.append("")
-            cb_curve = Path("experiments/baselines/catboost_training_curve.png")
+            # Check for additional baseline plots relative to report directory
+            baseline_dir = output_file.parent / "baselines"
+            cb_curve = baseline_dir / "catboost_training_curve.png"
             if cb_curve.exists():
-                lines.append(f"![CatBoost training]({cb_curve.as_posix()})")
+                lines.append(f"![CatBoost training]({get_relative_path(cb_curve)})")
                 lines.append("")
-            delta_plot = Path("experiments/baselines/baseline_delta_vs_hmtl.png")
+            delta_plot = baseline_dir / "baseline_delta_vs_hmtl.png"
             if delta_plot.exists():
-                lines.append(f"![Δ vs HMTL]({delta_plot.as_posix()})")
+                lines.append(f"![Δ vs HMTL]({get_relative_path(delta_plot)})")
                 lines.append("")
         
         lines.append("### Best Models")
