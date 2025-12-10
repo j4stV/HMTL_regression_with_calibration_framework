@@ -1,21 +1,22 @@
 encoder:
   input_dim: null  # будет заполнено автоматически
-  hidden_width: 256
+  hidden_width: 128
   depth_base: 12
-  depth_hmtl: 16
-  alpha_dropout: 0.005
+  depth_hmtl: 18
+  alpha_dropout: 0.0003
   activation: SELU
   init: lecun
 
 hmtl:
   enabled: true
-  aux_task: bins  # bins or n_pairs
-  low_layer: 8 
-  high_layer: 14  
-  lambda_aux: 0.15 
-  n_bins: 5 
+  aux_task: contrastive  # contrastive (N-pairs), or "bins"
+  low_layer: 12  # First 12 layers (2/3 of 18)
+  high_layer: 18  # Total 18 layers 
+  lambda_aux: 0.5  # Weight 0.5  (loss_weights for projection)
+  n_bins: 5  # Used only if aux_task="bins"
+  proj_dim: 50  # Projection dimension 50 
 
 regression_head:
   out_mu: 1
   out_sigma: 1
-  sigma_max: 3.0
+  # scale_coeff is computed automatically from target std

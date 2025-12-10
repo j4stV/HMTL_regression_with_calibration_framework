@@ -36,7 +36,7 @@ class CatBoostBaseline:
         self.models = []
         self.logger = get_logger("baselines.catboost")
     
-    def fit(self, X: np.ndarray, y: np.ndarray) -> None:
+    def fit(self, X: np.ndarray, y: np.ndarray, X_val: np.ndarray | None = None, y_val: np.ndarray | None = None) -> None:
         """Train ensemble of CatBoost models with proper uncertainty estimation."""
         self.logger.info(f"Training CatBoost ensemble with {self.n_models} models")
         
@@ -54,8 +54,19 @@ class CatBoostBaseline:
             
             # Convert to DataFrame for CatBoost
             X_df = pd.DataFrame(X, columns=[f"feature_{j}" for j in range(X.shape[1])])
+            eval_set = None
+            if X_val is not None and y_val is not None:
+                X_val_df = pd.DataFrame(X_val, columns=X_df.columns)
+                eval_set = (X_val_df, y_val)
             
-            model.fit(X_df, y)
+            model.fit(
+                X_df,
+                y,
+                eval_set=eval_set,
+                use_best_model=True if eval_set is not None else False,
+                verbose=False,
+                early_stopping_rounds=50 if eval_set is not None else None,
+            )
             self.models.append(model)
             
             if (i + 1) % 5 == 0:

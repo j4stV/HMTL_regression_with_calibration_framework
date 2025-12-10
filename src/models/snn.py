@@ -38,22 +38,25 @@ class SNNEncoder(nn.Module):
 
 
 class RegressionHead(nn.Module):
-    def __init__(self, in_dim: int, sigma_max: float = 5.0) -> None:
+    """Regression head.
+    
+    Scale = 1e-6 + softplus((1.0 / scale_coeff) * raw_sigma)
+    where scale_coeff is the target standard deviation.
+    This allows sigma to be learned in standardized space and scaled back.
+    """ 
+    def __init__(self, in_dim: int, scale_coeff: float = 1.0) -> None:
         super().__init__()
-        self.mu = nn.Linear(in_dim, 1)
-        self.raw_sigma = nn.Linear(in_dim, 1)
-        self.sigma_max = sigma_max  # Верхний предел для sigma (в стандартизированном пространстве)
+        self.mu = nn.Linear(in_dim, 1, bias=False)
+        self.raw_sigma = nn.Linear(in_dim, 1, bias=False)
+        self.scale_coeff = scale_coeff
         lecun_normal_(self.mu.weight)
-        nn.init.zeros_(self.mu.bias)
         lecun_normal_(self.raw_sigma.weight)
-        nn.init.zeros_(self.raw_sigma.bias)
 
     def forward(self, h: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         mu = self.mu(h)
-        # Ограничиваем sigma сверху для предотвращения взрыва неопределенности
-        # Используем более мягкую активацию с ограничением
-        sigma = torch.nn.functional.softplus(self.raw_sigma(h)) + 1e-6
-        sigma = torch.clamp(sigma, min=1e-6, max=self.sigma_max)
+        # Scale = 1e-6 + softplus((1.0 / scale_coeff) * raw_sigma)
+        raw_sigma = self.raw_sigma(h)
+        sigma = 1e-6 + torch.nn.functional.softplus((1.0 / self.scale_coeff) * raw_sigma)
         return mu, sigma
 
 # Повышение устойчивости через аугментации - подумать

@@ -11,6 +11,14 @@ from .contrastive import ProjectionHead
 
 
 class HMTLModel(nn.Module):
+    """HMTL model.
+    
+    Architecture:
+    - Low-level encoder: first 2/3 of layers (e.g., 12 out of 18)
+    - Projection head: attached after low-level encoder (for contrastive learning)
+    - High-level encoder: remaining layers (e.g., 6 out of 18)
+    - Regression head: attached after high-level encoder
+    """
     def __init__(
         self,
         input_dim: int,
@@ -21,18 +29,21 @@ class HMTLModel(nn.Module):
         n_bins: int,
         aux_weight: float,
         enable_aux: bool = True,
-        aux_task: str = "bins",  # "bins" or "contrastive"
-        proj_dim: int = 128,
-        sigma_max: float = 5.0,
+        aux_task: str = "contrastive",  # "bins" or "contrastive" (default: contrastive )
+        proj_dim: int = 50,  # Default 50 
+        scale_coeff: float = 1.0,  # Target std for sigma scaling 
     ) -> None:
         super().__init__()
         self.enable_aux = enable_aux
         self.aux_weight = aux_weight
         self.aux_task = aux_task
 
+        # Low-level encoder: first 2/3 of layers (e.g., 12 layers)
         self.encoder_low = SNNEncoder(input_dim, hidden_width, depth_low, alpha_dropout)
+        # High-level encoder: remaining layers (e.g., 6 layers)
         self.encoder_high = SNNEncoder(self.encoder_low.output_dim, hidden_width, depth_high - depth_low, alpha_dropout)
-        self.reg_head = RegressionHead(self.encoder_high.output_dim, sigma_max=sigma_max)
+        # Regression head with scale_coeff 
+        self.reg_head = RegressionHead(self.encoder_high.output_dim, scale_coeff=scale_coeff)
         
         if enable_aux:
             if aux_task == "bins":

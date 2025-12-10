@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,6 +9,7 @@ import seaborn as sns
 
 from src.eval.evaluator import EvaluationResults
 from src.utils.logger import get_logger
+from src.eval.conformal import ConformalResults
 
 # Set style
 sns.set_style("whitegrid")
@@ -255,6 +256,11 @@ def plot_retention_vs_rejection_comparison(
     # Left plot: Retention curve
     ax1.plot(retention_x, retention_y, linewidth=2, label="Retention Curve", color="blue")
     ax1.fill_between(retention_x, 0, retention_y, alpha=0.3, color="blue")
+    # Best point (min error)
+    if len(retention_y) > 0:
+        best_idx = int(np.argmin(retention_y))
+        ax1.axvline(retention_x[best_idx], color="blue", linestyle="--", alpha=0.6, label="Best retention")
+        ax1.scatter(retention_x[best_idx], retention_y[best_idx], color="blue", s=60, zorder=5)
     ax1.set_xlabel("Retention Fraction", fontsize=12)
     ax1.set_ylabel("Mean MSE", fontsize=12)
     ax1.set_title("Retention Curve", fontsize=14, fontweight="bold")
@@ -279,6 +285,247 @@ def plot_retention_vs_rejection_comparison(
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
         logger.info(f"Saved comparison plot to {save_path}")
     
+    plt.close(fig)
+
+
+def plot_calibration_before_after(
+    pi_metrics_before: Dict[float, Dict[str, float]],
+    pi_metrics_after: Dict[float, Dict[str, float]],
+    save_path: Path | str,
+    title: str = "Calibration Before/After Conformal",
+) -> None:
+    """Bar plot coverage/width before vs after conformal calibration."""
+    logger = get_logger("eval.visualization")
+    levels = sorted(pi_metrics_after.keys())
+    if not levels:
+        return
+    cov_before = [pi_metrics_before[l]["coverage"] * 100 if l in pi_metrics_before else np.nan for l in levels]
+    cov_after = [pi_metrics_after[l]["coverage"] * 100 if l in pi_metrics_after else np.nan for l in levels]
+    width_before = [pi_metrics_before[l].get("mean_width", np.nan) if l in pi_metrics_before else np.nan for l in levels]
+    width_after = [pi_metrics_after[l].get("mean_width", np.nan) if l in pi_metrics_after else np.nan for l in levels]
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    x = np.arange(len(levels))
+    barw = 0.35
+    
+    axes[0].bar(x - barw/2, cov_before, width=barw, label="Before")
+    axes[0].bar(x + barw/2, cov_after, width=barw, label="After")
+    axes[0].axhline(80, color="r", linestyle="--", alpha=0.3)
+    axes[0].axhline(90, color="r", linestyle="--", alpha=0.3)
+    axes[0].axhline(95, color="r", linestyle="--", alpha=0.3)
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels([f"{int(l*100)}%" for l in levels])
+    axes[0].set_ylabel("Coverage, %")
+    axes[0].set_title("Coverage Before/After")
+    axes[0].grid(True, axis="y", alpha=0.3)
+    axes[0].legend()
+    
+    axes[1].bar(x - barw/2, width_before, width=barw, label="Before")
+    axes[1].bar(x + barw/2, width_after, width=barw, label="After")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels([f"{int(l*100)}%" for l in levels])
+    axes[1].set_ylabel("Mean PI width")
+    axes[1].set_title("PI Width Before/After")
+    axes[1].grid(True, axis="y", alpha=0.3)
+    axes[1].legend()
+    
+    plt.suptitle(title, fontsize=15, fontweight="bold")
+    plt.tight_layout()
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    logger.info(f"Saved calibration before/after plot to {save_path}")
+    plt.close(fig)
+
+
+def plot_residual_diagnostics(
+    residuals: np.ndarray,
+    y_pred: np.ndarray,
+    uncertainty: np.ndarray | None,
+    save_dir: Path | str,
+    prefix: str = "",
+) -> None:
+    """Hist + QQ + residual vs prediction."""
+    logger = get_logger("eval.visualization")
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Residual histogram
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.hist(residuals, bins=40, alpha=0.7, color="steelblue", edgecolor="black")
+    ax.axvline(0, color="red", linestyle="--", linewidth=2, label="0")
+    ax.set_title(f"{prefix} Residual Histogram", fontweight="bold")
+    ax.set_xlabel("Residual (y_true - y_pred)")
+    ax.set_ylabel("Count")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(save_dir / f"{prefix}residual_hist.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    
+    # QQ plot (normal)
+    try:
+        from scipy import stats  # type: ignore
+        fig, ax = plt.subplots(figsize=(6, 6))
+        stats.probplot(residuals, dist="norm", plot=ax)
+        ax.set_title(f"{prefix} QQ-Plot (residuals)", fontweight="bold")
+        plt.tight_layout()
+        plt.savefig(save_dir / f"{prefix}residual_qq.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+    except Exception as e:
+        logger.warning(f"Skipping QQ plot (scipy missing?): {e}")
+    
+    # Residual vs prediction
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(y_pred, residuals, alpha=0.35, s=12)
+    ax.axhline(0, color="red", linestyle="--", linewidth=2)
+    ax.set_xlabel("Prediction")
+    ax.set_ylabel("Residual")
+    ax.set_title(f"{prefix} Residuals vs Prediction", fontweight="bold")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_dir / f"{prefix}residual_vs_pred.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    
+    if uncertainty is not None:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.scatter(uncertainty, residuals, alpha=0.35, s=12, color="darkorange")
+        ax.axhline(0, color="red", linestyle="--", linewidth=2)
+        ax.set_xlabel("Uncertainty")
+        ax.set_ylabel("Residual")
+        ax.set_title(f"{prefix} Residuals vs Uncertainty", fontweight="bold")
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(save_dir / f"{prefix}residual_vs_uncertainty.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+
+def plot_uncertainty_vs_error(
+    errors: np.ndarray,
+    uncertainty: np.ndarray,
+    save_dir: Path | str,
+    prefix: str = "",
+) -> None:
+    """Scatter/box diagnostics of |error| vs uncertainty."""
+    logger = get_logger("eval.visualization")
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    abs_err = np.abs(errors)
+    corr = np.corrcoef(abs_err, uncertainty)[0, 1] if len(abs_err) > 1 else np.nan
+    
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(abs_err, uncertainty, alpha=0.3, s=10)
+    ax.set_xlabel("|error|")
+    ax.set_ylabel("uncertainty")
+    ax.set_title(f"{prefix} |error| vs uncertainty (corr={corr:.3f})", fontweight="bold")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_dir / f"{prefix}uncertainty_vs_error.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    
+    # Boxplot by error quantiles
+    quantiles = np.quantile(abs_err, [0, 0.25, 0.5, 0.75, 1.0])
+    bins = np.digitize(abs_err, quantiles[1:-1], right=True)
+    grouped = [uncertainty[bins == i] for i in range(len(quantiles)-1)]
+    labels = [f"Q{i+1}" for i in range(len(quantiles)-1)]
+    
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.boxplot(grouped, labels=labels, showfliers=False)
+    ax.set_xlabel("Error quantile bin")
+    ax.set_ylabel("Uncertainty")
+    ax.set_title(f"{prefix} Uncertainty by error quantile", fontweight="bold")
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_dir / f"{prefix}uncertainty_by_error_quantile.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_pi_width_distribution(
+    pi_intervals_after: Dict[float, Tuple[np.ndarray, np.ndarray]],
+    save_dir: Path | str,
+    prefix: str = "",
+) -> None:
+    """Distribution of PI widths for each coverage level."""
+    logger = get_logger("eval.visualization")
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    levels = sorted(pi_intervals_after.keys())
+    if not levels:
+        return
+    
+    for level in levels:
+        lower, upper = pi_intervals_after[level]
+        widths = upper - lower
+        # Determine number of bins dynamically based on data
+        if len(widths) == 0:
+            continue
+        
+        # Check if all values are the same (or very close)
+        unique_values = np.unique(widths)
+        if len(unique_values) == 1:
+            # All widths are the same, use a single bin
+            n_bins = 1
+        else:
+            # Calculate range to ensure we can create bins
+            width_range = np.max(widths) - np.min(widths)
+            if width_range == 0 or np.isclose(width_range, 0):
+                n_bins = 1
+            else:
+                n_bins = min(40, max(1, len(unique_values)))
+        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.hist(widths, bins=n_bins, alpha=0.7, color="seagreen", edgecolor="black")
+        ax.set_title(f"{prefix} PI width dist @ {int(level*100)}%", fontweight="bold")
+        ax.set_xlabel("Width")
+        ax.set_ylabel("Count")
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(save_dir / f"{prefix}pi_width_{int(level*100)}.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+
+def plot_training_history(
+    history: List[Dict[str, float]],
+    save_path: Path | str,
+    best_epoch: int | None = None,
+    early_stop_epoch: int | None = None,
+    title: str = "Training Curves",
+) -> None:
+    """Plot train/val curves from history."""
+    if not history:
+        return
+    logger = get_logger("eval.visualization")
+    epochs = [h["epoch"] for h in history]
+    train_loss = [h.get("train_loss", np.nan) for h in history]
+    val_score = [h.get("val_r_auc_mse", np.nan) for h in history]
+    val_rmse = [h.get("val_rmse", np.nan) for h in history]
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    axes[0].plot(epochs, train_loss, label="Train loss", color="blue")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
+    axes[0].set_title("Train loss", fontweight="bold")
+    axes[0].grid(True, alpha=0.3)
+    
+    axes[1].plot(epochs, val_score, label="Val R-AUC MSE (lower better)", color="orange")
+    axes[1].plot(epochs, val_rmse, label="Val RMSE", color="green", alpha=0.8)
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_title("Validation metrics", fontweight="bold")
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend()
+    
+    for ax in axes:
+        if best_epoch is not None:
+            ax.axvline(best_epoch, color="red", linestyle="--", alpha=0.6, label="Best")
+        if early_stop_epoch is not None:
+            ax.axvline(early_stop_epoch, color="purple", linestyle=":", alpha=0.6, label="Early stop")
+    
+    plt.suptitle(title, fontsize=15, fontweight="bold")
+    plt.tight_layout()
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    logger.info(f"Saved training history to {save_path}")
     plt.close(fig)
 
 
@@ -334,6 +581,38 @@ def visualize_evaluation_results(
             actual_coverages,
             save_path=output_dir / f"{prefix}calibration.png",
             title=f"{prefix}Calibration Curve",
+        )
+        
+        # Before/after coverage & width comparison
+        plot_calibration_before_after(
+            results.pi_metrics_before,
+            results.pi_metrics_after,
+            save_path=output_dir / f"{prefix}calibration_before_after.png",
+            title=f"{prefix}Calibration Before/After",
+        )
+        
+        # PI width distribution
+        plot_pi_width_distribution(
+            results.pi_intervals_after,
+            save_dir=output_dir,
+            prefix=prefix,
+        )
+    
+    # Residual diagnostics & uncertainty-error relations
+    if results.residuals is not None and results.y_pred is not None:
+        plot_residual_diagnostics(
+            residuals=results.residuals,
+            y_pred=results.y_pred,
+            uncertainty=results.uncertainty_total,
+            save_dir=output_dir,
+            prefix=prefix,
+        )
+    if results.residuals is not None and results.uncertainty_total is not None:
+        plot_uncertainty_vs_error(
+            errors=results.residuals,
+            uncertainty=results.uncertainty_total,
+            save_dir=output_dir,
+            prefix=prefix,
         )
     
     logger.info(f"Visualizations saved to {output_dir}")

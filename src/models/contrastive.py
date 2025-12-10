@@ -9,18 +9,28 @@ from src.utils.logger import get_logger
 
 
 class ProjectionHead(nn.Module):
-    """Projection head for contrastive learning."""
+    """Projection head for contrastive learning.
     
-    def __init__(self, in_dim: int, proj_dim: int = 128) -> None:
+    Projection is a single linear layer without bias, output size 50.
+    """
+    
+    def __init__(self, in_dim: int, proj_dim: int = 50) -> None:
         super().__init__()
-        self.fc1 = nn.Linear(in_dim, proj_dim)
-        self.fc2 = nn.Linear(proj_dim, proj_dim)
-        self.relu = nn.ReLU(inplace=True)
+        self.fc = nn.Linear(in_dim, proj_dim, bias=False)
+        # Initialize with Lecun normal
+        nn.init.kaiming_normal_(self.fc.weight, mode='fan_in', nonlinearity='linear')
+        # Lecun normal for linear layer
+        fan_in = self.fc.weight.size(1)
+        std = (1.0 / max(1.0, fan_in)) ** 0.5
+        with torch.no_grad():
+            self.fc.weight.data = torch.clamp(
+                torch.normal(0, std, size=self.fc.weight.shape),
+                -2 * std, 2 * std
+            )
     
     def forward(self, h: torch.Tensor) -> torch.Tensor:
-        z = self.relu(self.fc1(h))
-        z = self.fc2(z)
-        # L2 normalize
+        z = self.fc(h)
+        # L2 normalize ()
         z = z / (torch.norm(z, dim=1, keepdim=True) + 1e-8)
         return z
 
@@ -32,7 +42,11 @@ class NPairsLoss(nn.Module):
     and push negative samples (different classes) apart.
     """
     
-    def __init__(self, temperature: float = 0.1) -> None:
+    def __init__(self, temperature: float = 0.5) -> None:
+        """N-pairs loss with temperature parameter.
+        
+        Temperature is 0.5.
+        """
         super().__init__()
         self.temperature = temperature
     
@@ -77,8 +91,11 @@ class NPairsLoss(nn.Module):
         return loss.mean()
 
 
-def n_pairs_loss(projections: torch.Tensor, labels: torch.Tensor, temperature: float = 0.1) -> torch.Tensor:
-    """Convenience function for N-pairs loss."""
+def n_pairs_loss(projections: torch.Tensor, labels: torch.Tensor, temperature: float = 0.5) -> torch.Tensor:
+    """Convenience function for N-pairs loss.
+    
+    Default temperature is 0.5.
+    """
     criterion = NPairsLoss(temperature=temperature)
     return criterion(projections, labels)
 

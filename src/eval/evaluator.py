@@ -21,10 +21,19 @@ class EvaluationResults:
     conformal_results: Dict[float, ConformalResults]
     pi_metrics_before: Dict[float, Dict[str, float]]
     pi_metrics_after: Dict[float, Dict[str, float]]
+    pi_intervals_before: Dict[float, tuple[np.ndarray, np.ndarray]]
+    pi_intervals_after: Dict[float, tuple[np.ndarray, np.ndarray]]
     error_retention_x: np.ndarray
     error_retention_y: np.ndarray
     # Rejection curve из референсного репозитория
     rejection_curve: np.ndarray | None = None
+    # Для продвинутой визуализации
+    y_true: np.ndarray | None = None
+    y_pred: np.ndarray | None = None
+    uncertainty_total: np.ndarray | None = None
+    uncertainty_epistemic: np.ndarray | None = None
+    uncertainty_aleatoric: np.ndarray | None = None
+    residuals: np.ndarray | None = None
 
 
 def evaluate_on_dataset(
@@ -36,17 +45,21 @@ def evaluate_on_dataset(
     coverage_levels: list[float] = [0.80, 0.90, 0.95],
     device: torch.device | None = None,
     preprocessor=None,
+    use_normalized_metrics: bool = True,
 ) -> EvaluationResults:
     """Comprehensive evaluation on a dataset.
     
     Args:
         models: List of trained models
         X: Features
-        y_true: True target values
+        y_true: True target values (should be in standardized space if use_normalized_metrics=True)
         X_cal: Calibration features (optional, for conformal calibration)
         y_cal: Calibration targets (optional, for conformal calibration)
         coverage_levels: Desired coverage levels for conformal calibration
         device: Device to use for inference
+        preprocessor: Preprocessor for inverse transformation (if None, metrics computed in standardized space)
+        use_normalized_metrics: If True, compute metrics in standardized space (like baselines). 
+                               If False, transform predictions back to original space.
     
     Returns:
         EvaluationResults with all metrics and calibration results
@@ -63,13 +76,24 @@ def evaluate_on_dataset(
         models, X, device=device
     )
     
-    # Transform uncertainty back to original space if preprocessor is provided
-    if preprocessor is not None:
-        logger.info("Transforming uncertainty from standardized to original space")
+    # Store standardized values for potential use
+    y_pred_std = y_pred.copy()
+    uncertainty_total_std = uncertainty_total.copy()
+    uncertainty_epistemic_std = uncertainty_epistemic.copy()
+    uncertainty_aleatoric_std = uncertainty_aleatoric.copy()
+    
+    # Transform predictions and uncertainty back to original space if needed
+    if preprocessor is not None and not use_normalized_metrics:
+        logger.info("Transforming predictions and uncertainty from standardized to original space")
+        y_pred_original = preprocessor.inverse_transform_target(y_pred)
         uncertainty_total_original = preprocessor.inverse_transform_uncertainty(uncertainty_total)
         uncertainty_epistemic_original = preprocessor.inverse_transform_uncertainty(uncertainty_epistemic)
         uncertainty_aleatoric_original = preprocessor.inverse_transform_uncertainty(uncertainty_aleatoric)
         
+        logger.info(
+            f"Transformation - "
+            f"y_pred: std={np.mean(y_pred):.6f} -> orig={np.mean(y_pred_original):.6f}"
+        )
         logger.info(
             f"Uncertainty transformation - "
             f"Standardized: total={np.mean(uncertainty_total):.6f}, "
@@ -83,12 +107,15 @@ def evaluate_on_dataset(
             f"aleatoric={np.mean(uncertainty_aleatoric_original):.6f}"
         )
         
-        # Use original space uncertainty for metrics
+        # Use original space for metrics
+        y_pred = y_pred_original
         uncertainty_total = uncertainty_total_original
         uncertainty_epistemic = uncertainty_epistemic_original
         uncertainty_aleatoric = uncertainty_aleatoric_original
+    elif use_normalized_metrics:
+        logger.info("Computing metrics in standardized (normalized) space (like baselines)")
     else:
-        logger.warning("No preprocessor provided - uncertainty remains in standardized space")
+        logger.warning("No preprocessor provided - predictions remain in standardized space")
     
     # Compute base metrics
     metrics = evaluate_comprehensive(
@@ -118,6 +145,8 @@ def evaluate_on_dataset(
     conformal_results = {}
     pi_metrics_before = {}
     pi_metrics_after = {}
+    pi_intervals_before: Dict[float, tuple[np.ndarray, np.ndarray]] = {}
+    pi_intervals_after: Dict[float, tuple[np.ndarray, np.ndarray]] = {}
     
     if X_cal is not None and y_cal is not None:
         logger.info("Performing conformal calibration")
@@ -139,6 +168,7 @@ def evaluate_on_dataset(
             lower_before = y_pred - z_score * uncertainty_total
             upper_before = y_pred + z_score * uncertainty_total
             pi_metrics_before[coverage_level] = compute_pi_metrics(y_true, lower_before, upper_before)
+            pi_intervals_before[coverage_level] = (lower_before, upper_before)
             
             # After calibration: use conformal intervals
             conf_result = conformal_results[coverage_level]
@@ -146,6 +176,7 @@ def evaluate_on_dataset(
             from src.eval.conformal import apply_intervals
             lower_after, upper_after = apply_intervals(y_pred, conf_result.quantile)
             pi_metrics_after[coverage_level] = compute_pi_metrics(y_true, lower_after, upper_after)
+            pi_intervals_after[coverage_level] = (lower_after, upper_after)
             
             logger.info(
                 f"Coverage {coverage_level:.0%} - Before: {pi_metrics_before[coverage_level]['coverage']:.4%}, "
@@ -159,8 +190,16 @@ def evaluate_on_dataset(
         conformal_results=conformal_results,
         pi_metrics_before=pi_metrics_before,
         pi_metrics_after=pi_metrics_after,
+        pi_intervals_before=pi_intervals_before,
+        pi_intervals_after=pi_intervals_after,
         error_retention_x=error_retention_x,
         error_retention_y=error_retention_y,
         rejection_curve=rejection_curve,
+        y_true=y_true,
+        y_pred=y_pred,
+        uncertainty_total=uncertainty_total,
+        uncertainty_epistemic=uncertainty_epistemic,
+        uncertainty_aleatoric=uncertainty_aleatoric,
+        residuals=y_true - y_pred,
     )
 

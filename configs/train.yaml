@@ -1,18 +1,18 @@
 optimizer:
   name: radam_lookahead
-  lr: 0.0003
-  lookahead_sync_period: 6
-  lookahead_slow_step: 0.5
-  weight_decay: 0.0005
+  lr: 0.0003  # 
+  lookahead_sync_period: 6  # 
+  lookahead_slow_step: 0.5  # 
+  weight_decay: 0.0  # No weight decay 
 
 training:
   seed: 42
-  epochs: 100
-  batch_size: 1024
-  sigma_reg_weight: 0.05  # регуляризация для предотвращения взрыва sigma
+  epochs: 1000  # Increased to 1000  (with early stopping)
+  batch_size: 4096  # Increased to 4096  (reduce if OOM)
+  sigma_reg_weight: 0.0  # Disabled
   early_stop:
     metric: r_auc_mse
-    patience: 10
+    patience: 15  # Increased to 15 
     mode: min
 
 logging:

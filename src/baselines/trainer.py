@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import List
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -100,6 +101,7 @@ def train_hmtl_baseline(
     train_cfg: TrainConfig | None = None,
     ensemble_cfg: EnsembleConfig | None = None,
     sigma_max: float = 5.0,
+    history_dir: str | Path | None = None,
 ) -> List[HMTLModel]:
     """Train HMTL ensemble baseline."""
     logger = get_logger("baselines.trainer")
@@ -148,6 +150,7 @@ def train_hmtl_baseline(
         n_bins=n_bins,
         ens_cfg=ensemble_cfg,
         train_cfg=train_cfg,
+        history_dir=history_dir,
     )
     
     logger.info(f"HMTL baseline trained. Ensemble average score: {avg_score:.6f}")
@@ -157,6 +160,8 @@ def train_hmtl_baseline(
 def train_catboost_baseline(
     X_tr: np.ndarray,
     y_tr: np.ndarray,
+    X_va: np.ndarray | None = None,
+    y_va: np.ndarray | None = None,
     n_models: int = 10,
     iterations: int = 1000,
     learning_rate: float = 0.1,
@@ -174,7 +179,7 @@ def train_catboost_baseline(
         random_seed=random_seed,
     )
     
-    baseline.fit(X_tr, y_tr)
+    baseline.fit(X_tr, y_tr, X_val=X_va, y_val=y_va)
     
     logger.info("CatBoost baseline trained")
     return baseline

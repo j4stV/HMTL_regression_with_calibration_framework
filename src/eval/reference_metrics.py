@@ -1,4 +1,4 @@
-"""Метрики из референсного репозитория bond005/yandex-shifts-weather.
+"""Метрики из референсного репозитория
 
 Этот модуль содержит реализации метрик из референсного репозитория для сравнения.
 """
@@ -20,9 +20,7 @@ logger = get_logger("eval.reference_metrics")
 def calc_uncertainty_rejection_curve(errors, uncertainty, group_by_uncertainty=True):
     """
     Вычисляет кривую отбрасывания (rejection curve) по неопределенности.
-    
-    Из референсного репозитория: bond005/yandex-shifts-weather
-    
+        
     Args:
         errors: Массив ошибок для каждого объекта [n_samples]
         uncertainty: Массив неопределенностей [n_samples]
@@ -57,8 +55,6 @@ def calc_aucs(errors, uncertainty):
     """
     Вычисляет нормализованную метрику rejection ratio.
     
-    Из референсного репозитория: bond005/yandex-shifts-weather
-    
     Args:
         errors: Массив ошибок [n_samples]
         uncertainty: Массив неопределенностей [n_samples]
@@ -80,8 +76,6 @@ def calc_aucs(errors, uncertainty):
 def prr_regression(targets, preds, measure):
     """
     Обертка для регрессии - вычисляет rejection ratio для регрессионной задачи.
-    
-    Из референсного репозитория: bond005/yandex-shifts-weather
     
     Args:
         targets: Истинные значения [n_samples]
@@ -186,7 +180,6 @@ def _calc_fbeta_rejection_curve(errors, uncertainty, threshold, beta=1.0, group_
     """
     Вычисляет F-beta кривую отбрасывания.
     
-    Из референсного репозитория: bond005/yandex-shifts-weather
     """
     ae = _acceptable_error(errors, threshold)
     pr, rec, _ = _precision_recall_curve_retention(ae, -uncertainty)
@@ -201,7 +194,6 @@ def f_beta_metrics(errors, uncertainty, threshold, beta=1.0):
     """
     Вычисляет F-beta метрики для оценки качества неопределенности.
     
-    Из референсного репозитория: bond005/yandex-shifts-weather
     
     Args:
         errors: Ошибки для каждого образца [n_samples]
@@ -228,7 +220,6 @@ def ood_detect(domain_labels, in_measure, out_measure, mode='ROC', pos_label=1):
     """
     Детекция out-of-distribution данных.
     
-    Из референсного репозитория: bond005/yandex-shifts-weather
     
     Args:
         domain_labels: Метки домена (1 для in-distribution, 0 для out-of-distribution)
@@ -259,7 +250,6 @@ def nll_regression(target, mu, var, epsilon=1e-8, raw=False):
     """
     Negative Log-Likelihood для регрессии.
     
-    Из референсного репозитория: bond005/yandex-shifts-weather
     
     Args:
         target: Истинные значения
@@ -281,7 +271,6 @@ def ens_nll_regression(target, preds, epsilon=1e-8, raw=False):
     """
     NLL для ансамбля моделей.
     
-    Из референсного репозитория: bond005/yandex-shifts-weather
     
     Args:
         target: Истинные значения [n_samples]

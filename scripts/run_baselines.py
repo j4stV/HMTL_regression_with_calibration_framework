@@ -12,6 +12,7 @@ import argparse
 import yaml
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 from src.data.preprocess import PreprocessConfig, TabularPreprocessor
 from src.baselines.trainer import (
@@ -71,11 +72,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run baseline comparisons")
     parser.add_argument("--data", default="configs/data.yaml", help="Path to data configuration file")
     parser.add_argument("--train", default="configs/train.yaml", help="Path to training configuration file")
-    parser.add_argument("--baselines", nargs="+", default=["single_mlp", "flat_mtl"], 
+    parser.add_argument("--baselines", nargs="+", default=["single_mlp", "flat_mtl", "catboost", "hmtl"], 
                        choices=["single_mlp", "flat_mtl", "catboost", "hmtl"],
                        help="Baselines to run")
     parser.add_argument("--output", default="experiments/baselines", help="Output directory for results")
+    parser.add_argument("--hmtl-from-main", type=str, default=None, 
+                       help="Path to main experiment results JSON to use HMTL metrics from there instead of training")
     args = parser.parse_args()
+
+    training_dir = Path(args.output) / "training"
+
+    # Гарантируем, что HMTL всегда участвует в сравнении (требование отчета)
+    if "hmtl" not in args.baselines:
+        args.baselines.append("hmtl")
+        args.baselines = list(dict.fromkeys(args.baselines))  # сохраняем порядок без дублей
+        logger.info("Добавляем HMTL к списку базлайнов для сравнения")
     
     # Load configs
     data_cfg = load_yaml(Path(args.data))
@@ -170,8 +181,34 @@ def main() -> None:
         logger.info("Training CatBoost Baseline")
         logger.info("=" * 80)
         try:
-            baseline = train_catboost_baseline(X_tr, y_tr, n_models=10)
+            baseline = train_catboost_baseline(X_tr, y_tr, X_va, y_va, n_models=10)
             y_pred, uncertainty, _, _ = baseline.predict(X_va)
+            
+            # Plot training curves from first CatBoost model if available
+            try:
+                if baseline.models:
+                    evals = baseline.models[0].get_evals_result()
+                    learn = evals.get("learn", {})
+                    valid = evals.get("validation", {})
+                    if learn:
+                        cb_fig, cb_ax = plt.subplots(figsize=(8, 5))
+                        if "RMSE" in learn:
+                            cb_ax.plot(learn["RMSE"], label="train RMSE")
+                        if "RMSE" in valid:
+                            cb_ax.plot(valid["RMSE"], label="val RMSE")
+                        cb_ax.set_title("CatBoost training (RMSE)")
+                        cb_ax.set_xlabel("Iteration")
+                        cb_ax.set_ylabel("RMSE")
+                        cb_ax.grid(True, alpha=0.3)
+                        cb_ax.legend()
+                        Path(args.output).mkdir(parents=True, exist_ok=True)
+                        cb_plot = Path(args.output) / "catboost_training_curve.png"
+                        plt.tight_layout()
+                        plt.savefig(cb_plot, dpi=300, bbox_inches="tight")
+                        plt.close(cb_fig)
+                        logger.info(f"CatBoost training curve saved to {cb_plot}")
+            except Exception as e:
+                logger.warning(f"CatBoost training curve plotting failed: {e}")
             
             # Compute all metrics
             results["catboost"] = compute_all_metrics(y_va, y_pred, uncertainty)
@@ -210,97 +247,165 @@ def main() -> None:
     # HMTL baseline
     if "hmtl" in args.baselines:
         logger.info("=" * 80)
-        logger.info("Training HMTL Baseline")
+        logger.info("HMTL Baseline")
         logger.info("=" * 80)
-        try:
-            # Load model config if available, otherwise use defaults
-            model_cfg_path = Path("configs/model_snn.yaml")
-            if model_cfg_path.exists():
-                model_cfg = load_yaml(model_cfg_path)
-                hidden_width = int(model_cfg["encoder"]["hidden_width"])
-                depth_low = int(model_cfg["hmtl"]["low_layer"])
-                depth_high = int(model_cfg["hmtl"]["high_layer"])
-                alpha_dropout = float(model_cfg["encoder"]["alpha_dropout"])
-                n_bins = int(model_cfg["hmtl"]["n_bins"])
-                aux_weight = float(model_cfg["hmtl"]["lambda_aux"])
-                sigma_max = float(model_cfg.get("regression_head", {}).get("sigma_max", 5.0))
+        
+        # Try to load from main experiment if path provided
+        hmtl_from_main = None
+        if args.hmtl_from_main:
+            hmtl_main_path = Path(args.hmtl_from_main)
+            if hmtl_main_path.exists():
+                logger.info(f"Loading HMTL results from main experiment: {hmtl_main_path}")
+                try:
+                    import json
+                    with open(hmtl_main_path) as f:
+                        hmtl_from_main = json.load(f)
+                    logger.info("Successfully loaded HMTL metrics from main experiment")
+                except Exception as e:
+                    logger.warning(f"Failed to load HMTL from main experiment: {e}, will train instead")
             else:
-                # Use defaults
-                hidden_width = 512
-                depth_low = 12
-                depth_high = 18
-                alpha_dropout = 0.0003
-                n_bins = 5
-                aux_weight = 0.3
-                sigma_max = 5.0
-            
-            # Load ensemble config if available
-            ensemble_cfg_path = Path("configs/ensemble.yaml")
-            if ensemble_cfg_path.exists():
-                ensemble_cfg_yaml = load_yaml(ensemble_cfg_path)
-                n_models = int(ensemble_cfg_yaml["ensemble"]["n_models"])
-                bagging = str(ensemble_cfg_yaml["ensemble"]["bagging"])
-                ensemble_cfg = EnsembleConfig(n_models=n_models, bagging=bagging)
-            else:
-                n_models = 10
-                ensemble_cfg = EnsembleConfig(n_models=n_models, bagging="stratified_bins")
-            
-            models = train_hmtl_baseline(
-                X_tr, y_tr, X_va, y_va,
-                input_dim=input_dim,
-                hidden_width=hidden_width,
-                depth_low=depth_low,
-                depth_high=depth_high,
-                alpha_dropout=alpha_dropout,
-                n_bins=n_bins,
-                aux_weight=aux_weight,
-                n_models=n_models,
-                train_cfg=train_conf,
-                ensemble_cfg=ensemble_cfg,
-                sigma_max=sigma_max,
-            )
-            
-            # Evaluate using comprehensive evaluator
-            eval_results = evaluate_on_dataset(
-                models=models,
-                X=X_va,
-                y_true=y_va,
-                X_cal=X_va,  # Use validation set for calibration
-                y_cal=y_va,
-                coverage_levels=[0.80, 0.90, 0.95],
-                preprocessor=pre,
-            )
+                logger.warning(f"HMTL main results path does not exist: {hmtl_main_path}, will train instead")
+        
+        if hmtl_from_main:
+            # Use metrics from main experiment
+            logger.info("Using HMTL metrics from main experiment (no training needed)")
+            metrics_dict = hmtl_from_main.get("metrics", hmtl_from_main)
             
             results["hmtl"] = {
-                "rmse": eval_results.metrics.rmse,
-                "mse": eval_results.metrics.mse,
-                "mae": eval_results.metrics.mae,
-                "r_auc_mse": eval_results.metrics.r_auc_mse,
-                "mean_uncertainty": eval_results.metrics.mean_uncertainty,
+                "rmse": metrics_dict.get("val_rmse", 0.0),
+                "mse": metrics_dict.get("val_mse", 0.0),
+                "mae": metrics_dict.get("val_mae", 0.0),
+                "r_auc_mse": metrics_dict.get("val_r_auc_mse", 0.0),
+                "mean_uncertainty": metrics_dict.get("val_mean_uncertainty", 0.0),
             }
             
-            # Добавляем метрики из референсного репозитория
-            if eval_results.metrics.rejection_ratio is not None:
-                results["hmtl"]["rejection_ratio"] = eval_results.metrics.rejection_ratio
-                results["hmtl"]["rejection_auc"] = eval_results.metrics.rejection_auc
-            if eval_results.metrics.f_beta_auc is not None:
-                results["hmtl"]["f_beta_auc"] = eval_results.metrics.f_beta_auc
-                results["hmtl"]["f_beta_95"] = eval_results.metrics.f_beta_95
+            # Add coverage metrics if available
+            for level in [80, 90, 95]:
+                cov_key = f"val_coverage@{level}"
+                width_key = f"val_width@{level}"
+                if cov_key in metrics_dict:
+                    results["hmtl"][f"coverage@{level}"] = metrics_dict[cov_key]
+                if width_key in metrics_dict:
+                    results["hmtl"][f"width@{level}"] = metrics_dict[width_key]
             
-            # Add coverage metrics
-            for level in [0.80, 0.90, 0.95]:
-                if level in eval_results.pi_metrics_after:
-                    results["hmtl"][f"coverage@{int(level*100)}"] = eval_results.pi_metrics_after[level]["coverage"]
-                    results["hmtl"][f"width@{int(level*100)}"] = eval_results.pi_metrics_after[level]["mean_width"]
+            # Add reference metrics if available (they might be in val_results if stored)
+            # Check if val_results exists in the JSON
+            if "val_results" in hmtl_from_main and hmtl_from_main["val_results"]:
+                val_res = hmtl_from_main["val_results"]
+                if isinstance(val_res, dict) and "metrics" in val_res:
+                    val_metrics = val_res["metrics"]
+                    if isinstance(val_metrics, dict):
+                        if val_metrics.get("rejection_ratio") is not None:
+                            results["hmtl"]["rejection_ratio"] = val_metrics["rejection_ratio"]
+                        if val_metrics.get("rejection_auc") is not None:
+                            results["hmtl"]["rejection_auc"] = val_metrics["rejection_auc"]
+                        if val_metrics.get("f_beta_auc") is not None:
+                            results["hmtl"]["f_beta_auc"] = val_metrics["f_beta_auc"]
+                        if val_metrics.get("f_beta_95") is not None:
+                            results["hmtl"]["f_beta_95"] = val_metrics["f_beta_95"]
             
-            logger.info(f"HMTL - RMSE: {eval_results.metrics.rmse:.6f}, R-AUC MSE: {eval_results.metrics.r_auc_mse:.6f}")
-            for level in [0.80, 0.90, 0.95]:
-                if level in eval_results.pi_metrics_after:
-                    logger.info(f"  Coverage {level:.0%}: {eval_results.pi_metrics_after[level]['coverage']:.4%} "
-                              f"(width: {eval_results.pi_metrics_after[level]['mean_width']:.6f})")
-        except Exception as e:
-            logger.error(f"HMTL baseline failed: {e}")
-            logger.exception(e)
+            logger.info(f"HMTL (from main) - RMSE: {results['hmtl']['rmse']:.6f}, "
+                       f"R-AUC MSE: {results['hmtl']['r_auc_mse']:.6f}")
+            if "rejection_ratio" in results["hmtl"]:
+                logger.info(f"  Rejection Ratio: {results['hmtl']['rejection_ratio']:.2f}%")
+            for level in [80, 90, 95]:
+                cov_key = f"coverage@{level}"
+                if cov_key in results["hmtl"]:
+                    logger.info(f"  Coverage {level}%: {results['hmtl'][cov_key]:.4%}")
+        else:
+            # Train HMTL baseline (original logic)
+            logger.info("Training HMTL Baseline (no main experiment results found)")
+            try:
+                # Load model config if available, otherwise use defaults
+                model_cfg_path = Path("configs/model_snn.yaml")
+                if model_cfg_path.exists():
+                    model_cfg = load_yaml(model_cfg_path)
+                    hidden_width = int(model_cfg["encoder"]["hidden_width"])
+                    depth_low = int(model_cfg["hmtl"]["low_layer"])
+                    depth_high = int(model_cfg["hmtl"]["high_layer"])
+                    alpha_dropout = float(model_cfg["encoder"]["alpha_dropout"])
+                    n_bins = int(model_cfg["hmtl"]["n_bins"])
+                    aux_weight = float(model_cfg["hmtl"]["lambda_aux"])
+                    sigma_max = float(model_cfg.get("regression_head", {}).get("sigma_max", 5.0))
+                else:
+                    # Use defaults
+                    hidden_width = 512
+                    depth_low = 12
+                    depth_high = 18
+                    alpha_dropout = 0.0003
+                    n_bins = 5
+                    aux_weight = 0.3
+                    sigma_max = 5.0
+                
+                # Load ensemble config if available
+                ensemble_cfg_path = Path("configs/ensemble.yaml")
+                if ensemble_cfg_path.exists():
+                    ensemble_cfg_yaml = load_yaml(ensemble_cfg_path)
+                    n_models = int(ensemble_cfg_yaml["ensemble"]["n_models"])
+                    bagging = str(ensemble_cfg_yaml["ensemble"]["bagging"])
+                    ensemble_cfg = EnsembleConfig(n_models=n_models, bagging=bagging)
+                else:
+                    n_models = 10
+                    ensemble_cfg = EnsembleConfig(n_models=n_models, bagging="stratified_bins")
+                
+                models = train_hmtl_baseline(
+                    X_tr, y_tr, X_va, y_va,
+                    input_dim=input_dim,
+                    hidden_width=hidden_width,
+                    depth_low=depth_low,
+                    depth_high=depth_high,
+                    alpha_dropout=alpha_dropout,
+                    n_bins=n_bins,
+                    aux_weight=aux_weight,
+                    n_models=n_models,
+                    train_cfg=train_conf,
+                    ensemble_cfg=ensemble_cfg,
+                    sigma_max=sigma_max,
+                    history_dir=training_dir,
+                )
+                
+                # Evaluate using comprehensive evaluator
+                eval_results = evaluate_on_dataset(
+                    models=models,
+                    X=X_va,
+                    y_true=y_va,
+                    X_cal=X_va,  # Use validation set for calibration
+                    y_cal=y_va,
+                    coverage_levels=[0.80, 0.90, 0.95],
+                    preprocessor=pre,
+                    use_normalized_metrics=True,  # Compute metrics in standardized space (like baselines)
+                )
+                
+                results["hmtl"] = {
+                    "rmse": eval_results.metrics.rmse,
+                    "mse": eval_results.metrics.mse,
+                    "mae": eval_results.metrics.mae,
+                    "r_auc_mse": eval_results.metrics.r_auc_mse,
+                    "mean_uncertainty": eval_results.metrics.mean_uncertainty,
+                }
+                
+                # Добавляем метрики из референсного репозитория
+                if eval_results.metrics.rejection_ratio is not None:
+                    results["hmtl"]["rejection_ratio"] = eval_results.metrics.rejection_ratio
+                    results["hmtl"]["rejection_auc"] = eval_results.metrics.rejection_auc
+                if eval_results.metrics.f_beta_auc is not None:
+                    results["hmtl"]["f_beta_auc"] = eval_results.metrics.f_beta_auc
+                    results["hmtl"]["f_beta_95"] = eval_results.metrics.f_beta_95
+                
+                # Add coverage metrics
+                for level in [0.80, 0.90, 0.95]:
+                    if level in eval_results.pi_metrics_after:
+                        results["hmtl"][f"coverage@{int(level*100)}"] = eval_results.pi_metrics_after[level]["coverage"]
+                        results["hmtl"][f"width@{int(level*100)}"] = eval_results.pi_metrics_after[level]["mean_width"]
+                
+                logger.info(f"HMTL - RMSE: {eval_results.metrics.rmse:.6f}, R-AUC MSE: {eval_results.metrics.r_auc_mse:.6f}")
+                for level in [0.80, 0.90, 0.95]:
+                    if level in eval_results.pi_metrics_after:
+                        logger.info(f"  Coverage {level:.0%}: {eval_results.pi_metrics_after[level]['coverage']:.4%} "
+                                  f"(width: {eval_results.pi_metrics_after[level]['mean_width']:.6f})")
+            except Exception as e:
+                logger.error(f"HMTL baseline failed: {e}")
+                logger.exception(e)
     
     # Summary with detailed comparison
     logger.info("=" * 80)
@@ -333,6 +438,11 @@ def main() -> None:
         comparison_data.append(row)
     
     comparison_df = pd.DataFrame(comparison_data)
+    # Δ относительно HMTL (если есть)
+    if "hmtl" in comparison_df["Model"].values:
+        hmtl_row = comparison_df[comparison_df["Model"] == "hmtl"].iloc[0]
+        comparison_df["ΔRMSE_vs_HMTL"] = comparison_df["RMSE"] - hmtl_row["RMSE"]
+        comparison_df["ΔR-AUC_vs_HMTL"] = comparison_df["R-AUC MSE"] - hmtl_row["R-AUC MSE"]
     logger.info("\nComparison Table:")
     logger.info("\n" + comparison_df.to_string(index=False))
     
@@ -405,6 +515,20 @@ def main() -> None:
         ax.set_title("Mean Uncertainty Comparison")
         ax.set_ylabel("Mean Uncertainty")
         ax.tick_params(axis='x', rotation=45)
+        
+        # Δ vs HMTL (если есть)
+        if "ΔRMSE_vs_HMTL" in comparison_df.columns:
+            fig2, ax2 = plt.subplots(figsize=(8, 5))
+            comparison_df.plot(x="Model", y=["ΔRMSE_vs_HMTL", "ΔR-AUC_vs_HMTL"], kind="bar", ax=ax2)
+            ax2.set_title("Δметрики vs HMTL (ниже лучше)")
+            ax2.set_ylabel("Δ (model - HMTL)")
+            ax2.axhline(0, color="black", linewidth=1)
+            ax2.tick_params(axis='x', rotation=45)
+            plt.tight_layout()
+            delta_plot = output_dir / "baseline_delta_vs_hmtl.png"
+            plt.savefig(delta_plot, dpi=300, bbox_inches="tight")
+            plt.close(fig2)
+            logger.info(f"Delta plot saved to {delta_plot}")
         
         plt.tight_layout()
         plot_file = output_dir / "baseline_comparison.png"

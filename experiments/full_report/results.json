@@ -1,7 +1,65 @@
 {
-  "timestamp": "2025-11-22T18:13:52.633331",
+  "timestamp": "2025-12-10T15:16:43.869897",
   "main_experiment": {
-    "plots_dir": null
+    "metrics": {
+      "ensemble_avg_r_auc_mse": 0.5304519349280987,
+      "n_models": 20,
+      "val_rmse": 0.8534164643931926,
+      "val_mse": 0.7283196616973774,
+      "val_mae": 0.6529572874246059,
+      "val_r_auc_mse": 0.6453595990342861,
+      "val_mean_uncertainty": 0.9800633192062378,
+      "val_mean_epistemic": 0.23367804288864136,
+      "val_mean_aleatoric": 0.9505123496055603,
+      "test_rmse": 0.7387860344766479,
+      "test_mse": 0.5458048047377309,
+      "test_mae": 0.5568110172613125,
+      "test_r_auc_mse": 0.4000964173801353,
+      "test_mean_uncertainty": 0.9813399314880371,
+      "val_coverage@80": 0.799163179916318,
+      "val_width@80": 2.0836222171783447,
+      "test_coverage@80": 0.8630705394190872,
+      "test_width@80": 2.083622455596924,
+      "val_coverage@90": 0.899581589958159,
+      "val_width@90": 2.7874937057495117,
+      "test_coverage@90": 0.946058091286307,
+      "test_width@90": 2.7874932289123535,
+      "val_coverage@95": 0.9497907949790795,
+      "val_width@95": 3.494281053543091,
+      "test_coverage@95": 0.9626556016597511,
+      "test_width@95": 3.4942808151245117
+    },
+    "plots_dir": "experiments\\full_report\\main\\plots",
+    "plot_files": [
+      "experiments\\full_report\\main\\plots\\test_calibration.png",
+      "experiments\\full_report\\main\\plots\\test_calibration_before_after.png",
+      "experiments\\full_report\\main\\plots\\test_error_retention.png",
+      "experiments\\full_report\\main\\plots\\test_pi_width_80.png",
+      "experiments\\full_report\\main\\plots\\test_pi_width_90.png",
+      "experiments\\full_report\\main\\plots\\test_pi_width_95.png",
+      "experiments\\full_report\\main\\plots\\test_rejection_curve.png",
+      "experiments\\full_report\\main\\plots\\test_residual_hist.png",
+      "experiments\\full_report\\main\\plots\\test_residual_qq.png",
+      "experiments\\full_report\\main\\plots\\test_residual_vs_pred.png",
+      "experiments\\full_report\\main\\plots\\test_residual_vs_uncertainty.png",
+      "experiments\\full_report\\main\\plots\\test_retention_vs_rejection.png",
+      "experiments\\full_report\\main\\plots\\test_uncertainty_by_error_quantile.png",
+      "experiments\\full_report\\main\\plots\\test_uncertainty_vs_error.png",
+      "experiments\\full_report\\main\\plots\\val_calibration.png",
+      "experiments\\full_report\\main\\plots\\val_calibration_before_after.png",
+      "experiments\\full_report\\main\\plots\\val_error_retention.png",
+      "experiments\\full_report\\main\\plots\\val_pi_width_80.png",
+      "experiments\\full_report\\main\\plots\\val_pi_width_90.png",
+      "experiments\\full_report\\main\\plots\\val_pi_width_95.png",
+      "experiments\\full_report\\main\\plots\\val_rejection_curve.png",
+      "experiments\\full_report\\main\\plots\\val_residual_hist.png",
+      "experiments\\full_report\\main\\plots\\val_residual_qq.png",
+      "experiments\\full_report\\main\\plots\\val_residual_vs_pred.png",
+      "experiments\\full_report\\main\\plots\\val_residual_vs_uncertainty.png",
+      "experiments\\full_report\\main\\plots\\val_retention_vs_rejection.png",
+      "experiments\\full_report\\main\\plots\\val_uncertainty_by_error_quantile.png",
+      "experiments\\full_report\\main\\plots\\val_uncertainty_vs_error.png"
+    ]
   },
   "multi_seed": {
     "seeds": [
@@ -108,85 +166,81 @@
           "0.95": 0.9539748953974896
         }
       }
+    ],
+    "plot_files": [
+      "experiments\\full_report\\multi_seed\\coverage_distributions.png",
+      "experiments\\full_report\\multi_seed\\metric_distributions.png"
     ]
   },
   "baselines": {
     "comparison_table": [
       {
         "Model": "single_mlp",
-        "RMSE": 0.8424138739424624,
-        "MSE": 0.7096611350107469,
-        "MAE": 0.62153129875679,
-        "R-AUC MSE": 0.5796771417765686,
-        "Mean Uncertainty": 0.672491729259491,
+        "RMSE": 0.9081257238644528,
+        "MSE": 0.8246923303443366,
+        "MAE": 0.6924982624300617,
+        "R-AUC MSE": 0.8843249278089527,
+        "Mean Uncertainty": 0.9009682536125184,
         "Coverage@80": 0.0,
         "Coverage@90": 0.0,
         "Coverage@95": 0.0,
-        "Rejection Ratio (%)": 10.386802824351909,
-        "Rejection AUC": 0.3286004834814809,
-        "F-Beta AUC": 0.4762164529200537,
-        "F-Beta@95": 0.6436781608743559
+        "Rejection Ratio (%)": 0.5114934252221529,
+        "Rejection AUC": 0.4108996180554042,
+        "F-Beta AUC": 0.4320615949689842,
+        "F-Beta@95": 0.6666666666214824,
+        "\u0394RMSE_vs_HMTL": 0.0547092594712602,
+        "\u0394R-AUC_vs_HMTL": 0.2389653287746665
       },
       {
         "Model": "flat_mtl",
-        "RMSE": 0.8479012194482769,
-        "MSE": 0.718936477941875,
-        "MAE": 0.6385386336369114,
-        "R-AUC MSE": 0.6213049271952711,
-        "Mean Uncertainty": 0.8074100017547607,
+        "RMSE": 0.866032724256504,
+        "MSE": 0.750012679483142,
+        "MAE": 0.6548858722828436,
+        "R-AUC MSE": 0.5987518248157546,
+        "Mean Uncertainty": 0.9608848690986632,
         "Coverage@80": 0.0,
         "Coverage@90": 0.0,
         "Coverage@95": 0.0,
-        "Rejection Ratio (%)": 10.664084663849586,
-        "Rejection AUC": 0.3326757850458708,
-        "F-Beta AUC": 0.4803043977146244,
-        "F-Beta@95": 0.672413793058264
-      },
-      {
-        "Model": "catboost",
-        "RMSE": 0.7807251723955398,
-        "MSE": 0.6095317948120453,
-        "MAE": 0.5756714235933753,
-        "R-AUC MSE": 0.3297350771239782,
-        "Mean Uncertainty": 0.1360983631732849,
-        "Coverage@80": 0.803347280334728,
-        "Coverage@90": 0.9037656903765692,
-        "Coverage@95": 0.9539748953974896,
-        "Rejection Ratio (%)": 39.52425436152507,
-        "Rejection AUC": 0.2184305187488986,
-        "F-Beta AUC": 0.5814391426522598,
-        "F-Beta@95": 0.6839080459318272
+        "Rejection Ratio (%)": 15.075182268475256,
+        "Rejection AUC": 0.3359451971956131,
+        "F-Beta AUC": 0.4816454156780755,
+        "F-Beta@95": 0.6436781608743559,
+        "\u0394RMSE_vs_HMTL": 0.0126162598633113,
+        "\u0394R-AUC_vs_HMTL": -0.0466077742185314
       },
       {
         "Model": "hmtl",
-        "RMSE": 0.8298042278350872,
-        "MSE": 0.6885750565329853,
-        "MAE": 0.6195714229119024,
-        "R-AUC MSE": 0.5717107477950533,
-        "Mean Uncertainty": 0.852208137512207,
-        "Coverage@80": 0.803347280334728,
-        "Coverage@90": 0.9037656903765692,
-        "Coverage@95": 0.9539748953974896,
-        "Rejection Ratio (%)": 14.070175980287985,
-        "Rejection AUC": 0.3100792289383305,
-        "F-Beta AUC": 0.4966843642251172,
-        "F-Beta@95": 0.6609195401847008
+        "RMSE": 0.8534164643931926,
+        "MSE": 0.7283196616973774,
+        "MAE": 0.6529572874246059,
+        "R-AUC MSE": 0.6453595990342861,
+        "Mean Uncertainty": 0.9800633192062378,
+        "Coverage@80": 0.799163179916318,
+        "Coverage@90": 0.899581589958159,
+        "Coverage@95": 0.9497907949790796,
+        "Rejection Ratio (%)": NaN,
+        "Rejection AUC": NaN,
+        "F-Beta AUC": NaN,
+        "F-Beta@95": NaN,
+        "\u0394RMSE_vs_HMTL": 0.0,
+        "\u0394R-AUC_vs_HMTL": 0.0
       }
     ],
     "best_models": {
       "RMSE": {
-        "model": "catboost",
-        "value": 0.7807251723955398
+        "model": "hmtl",
+        "value": 0.8534164643931926
       },
       "R-AUC MSE": {
-        "model": "catboost",
-        "value": 0.3297350771239782
+        "model": "flat_mtl",
+        "value": 0.5987518248157546
       },
       "MAE": {
-        "model": "catboost",
-        "value": 0.5756714235933753
+        "model": "hmtl",
+        "value": 0.6529572874246059
       }
-    }
+    },
+    "plot": "experiments\\full_report\\baselines\\baseline_comparison.png"
   },
   "ablation": null
 }

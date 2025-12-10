@@ -149,7 +149,8 @@ def run_experiment(
     logger.info(f"Model input dimension: {input_dim}")
     
     def build_model() -> HMTLModel:
-        sigma_max = float(model_cfg.get("regression_head", {}).get("sigma_max", 5.0))
+        # Get scale_coeff from preprocessor (target std) for sigma scaling ()
+        scale_coeff = pre.target_std_ if pre.target_std_ is not None and pre.target_std_ > 1e-12 else 1.0
         return HMTLModel(
             input_dim=input_dim,
             hidden_width=int(model_cfg["encoder"]["hidden_width"]),
@@ -159,9 +160,9 @@ def run_experiment(
             n_bins=int(model_cfg["hmtl"]["n_bins"]),
             aux_weight=float(model_cfg["hmtl"]["lambda_aux"]),
             enable_aux=bool(model_cfg["hmtl"]["enabled"]),
-            aux_task=str(model_cfg["hmtl"].get("aux_task", "bins")),
-            proj_dim=int(model_cfg["hmtl"].get("proj_dim", 128)),
-            sigma_max=sigma_max,
+            aux_task=str(model_cfg["hmtl"].get("aux_task", "contrastive")),  # Default to contrastive
+            proj_dim=int(model_cfg["hmtl"].get("proj_dim", 50)),  # Default 50 
+            scale_coeff=scale_coeff,
         )
     
     logger.info("Model architecture:")
@@ -204,6 +205,7 @@ def run_experiment(
         n_bins=int(model_cfg["hmtl"]["n_bins"]),
         ens_cfg=ens_conf,
         train_cfg=train_conf,
+        history_dir=Path("experiments/plots/training"),
     )
     logger.info(f"Ensemble training completed. Average score: {avg_score:.6f}")
 
@@ -220,6 +222,7 @@ def run_experiment(
             y_cal=y_cal,
             coverage_levels=[0.80, 0.90, 0.95],
             preprocessor=pre,
+            use_normalized_metrics=True,  # Compute metrics in standardized space (like baselines)
         )
         
         logger.info("Validation Metrics:")
@@ -251,6 +254,7 @@ def run_experiment(
                 y_cal=y_cal,
                 coverage_levels=[0.80, 0.90, 0.95],
                 preprocessor=pre,
+                use_normalized_metrics=True,  # Compute metrics in standardized space (like baselines)
             )
             
             logger.info("Test Metrics:")
@@ -270,10 +274,23 @@ def run_experiment(
     logger.info("Generating Visualizations")
     logger.info("=" * 80)
     viz_output_dir = Path("experiments/plots")
-    visualize_evaluation_results(val_results, viz_output_dir, prefix="val_")
+    
+    try:
+        visualize_evaluation_results(val_results, viz_output_dir, prefix="val_")
+        logger.info(f"Validation visualizations saved to {viz_output_dir}")
+    except Exception as e:
+        logger.warning(f"Failed to generate validation visualizations: {e}")
+        logger.exception(e)
+        logger.info("Continuing pipeline execution despite visualization error...")
+    
     if test_results is not None:
-        visualize_evaluation_results(test_results, viz_output_dir, prefix="test_")
-    logger.info(f"Visualizations saved to {viz_output_dir}")
+        try:
+            visualize_evaluation_results(test_results, viz_output_dir, prefix="test_")
+            logger.info(f"Test visualizations saved to {viz_output_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to generate test visualizations: {e}")
+            logger.exception(e)
+            logger.info("Continuing pipeline execution despite visualization error...")
 
     # Final summary
     logger.info("=" * 80)

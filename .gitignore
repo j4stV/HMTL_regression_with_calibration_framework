@@ -4,3 +4,4 @@ catboost_info/
 tools/
 __pycache__/
 logs/
+yandex-shifts-weather/

@@ -11,6 +11,7 @@ sys.path.insert(0, str(project_root))
 import argparse
 import json
 import subprocess
+import shutil
 import time
 from datetime import datetime
 from typing import Dict, Any
@@ -60,9 +61,26 @@ def collect_results(output_dir: Path, logger) -> Dict[str, Any]:
     main_results_dir = output_dir / "main"
     if main_results_dir.exists():
         logger.info("Collecting main experiment results...")
-        results["main_experiment"] = {
-            "plots_dir": str(main_results_dir / "plots") if (main_results_dir / "plots").exists() else None,
-        }
+        main_info: Dict[str, Any] = {}
+        
+        # Metrics
+        main_metrics_file = main_results_dir / "results.json"
+        if main_metrics_file.exists():
+            try:
+                with open(main_metrics_file, "r", encoding="utf-8") as f:
+                    metrics_payload = json.load(f)
+                main_info["metrics"] = metrics_payload.get("metrics", metrics_payload)
+                logger.info(f"Loaded main experiment metrics from {main_metrics_file}")
+            except Exception as e:
+                logger.warning(f"Failed to read main experiment metrics: {e}")
+        
+        # Plots
+        plots_dir = main_results_dir / "plots"
+        if plots_dir.exists():
+            main_info["plots_dir"] = str(plots_dir)
+            main_info["plot_files"] = sorted([str(p) for p in plots_dir.glob("*.png")])
+        
+        results["main_experiment"] = main_info if main_info else None
     
     # Collect multi-seed results
     multi_seed_results_file = output_dir / "multi_seed" / "results.json"
@@ -70,6 +88,9 @@ def collect_results(output_dir: Path, logger) -> Dict[str, Any]:
         logger.info("Collecting multi-seed results...")
         with open(multi_seed_results_file) as f:
             results["multi_seed"] = json.load(f)
+        multi_seed_plots = list((output_dir / "multi_seed").glob("*.png"))
+        if multi_seed_plots:
+            results["multi_seed"]["plot_files"] = [str(p) for p in multi_seed_plots]
     
     # Collect baseline comparison results
     baseline_locations = [
@@ -91,6 +112,9 @@ def collect_results(output_dir: Path, logger) -> Dict[str, Any]:
                 "comparison_table": df.to_dict("records"),
                 "best_models": {},
             }
+            baseline_plot = baseline_results_file.parent / "baseline_comparison.png"
+            if baseline_plot.exists():
+                results["baselines"]["plot"] = str(baseline_plot)
             # Find best models
             for metric in ["RMSE", "R-AUC MSE", "MAE"]:
                 if metric in df.columns:
@@ -126,13 +150,122 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
     # Main experiment section
     lines.append("## 1. Main HMTL Experiment")
     lines.append("")
-    if results.get("main_experiment"):
-        lines.append("Main experiment completed successfully.")
-        if results["main_experiment"].get("plots_dir"):
-            lines.append(f"Plots available in: `{results['main_experiment']['plots_dir']}`")
+    main = results.get("main_experiment")
+    if main:
+        metrics = main.get("metrics", {})
+        def fmt_val(val: Any, pct: bool = False) -> str:
+            if val is None:
+                return "—"
+            try:
+                val = float(val)
+                return f"{val*100:.2f}%" if pct else f"{val:.6f}"
+            except Exception:
+                return str(val)
+        
+        # Core metrics table
+        lines.append("### Метрики (валидация / тест)")
+        lines.append("")
+        lines.append("| Metric | Validation | Test |")
+        lines.append("|--------|------------|------|")
+        metric_rows = [
+            ("RMSE", "val_rmse", "test_rmse"),
+            ("MAE", "val_mae", "test_mae"),
+            ("R-AUC MSE", "val_r_auc_mse", "test_r_auc_mse"),
+            ("Mean Uncertainty", "val_mean_uncertainty", "test_mean_uncertainty"),
+            ("Mean Epistemic", "val_mean_epistemic", None),
+            ("Mean Aleatoric", "val_mean_aleatoric", None),
+        ]
+        for label, val_key, test_key in metric_rows:
+            lines.append(
+                f"| {label} | {fmt_val(metrics.get(val_key))} | {fmt_val(metrics.get(test_key))} |"
+            )
+        lines.append("")
+        
+        # Coverage & interval width
+        lines.append("### Покрытие после конформной калибровки")
+        lines.append("")
+        lines.append("| Level | Val Coverage | Val Width | Test Coverage | Test Width |")
+        lines.append("|-------|--------------|-----------|---------------|------------|")
+        for level in [80, 90, 95]:
+            cov_val = metrics.get(f"val_coverage@{level}")
+            width_val = metrics.get(f"val_width@{level}")
+            cov_test = metrics.get(f"test_coverage@{level}")
+            width_test = metrics.get(f"test_width@{level}")
+            lines.append(
+                f"| {level}% | {fmt_val(cov_val, pct=True)} | {fmt_val(width_val)} | "
+                f"{fmt_val(cov_test, pct=True)} | {fmt_val(width_test)} |"
+            )
+        lines.append("")
+        
+        # Uncertainty breakdown
+        if any(metrics.get(k) is not None for k in ["val_mean_uncertainty", "val_mean_epistemic", "val_mean_aleatoric"]):
+            lines.append("### Разложение неопределенности")
+            lines.append("")
+            lines.append("- Вал. неопределенность: "
+                         f"{fmt_val(metrics.get('val_mean_uncertainty'))} "
+                         f"(эпистемическая: {fmt_val(metrics.get('val_mean_epistemic'))}, "
+                         f"алеаторная: {fmt_val(metrics.get('val_mean_aleatoric'))})")
+            if metrics.get("test_mean_uncertainty") is not None:
+                lines.append(f"- Тестовая неопределенность: {fmt_val(metrics.get('test_mean_uncertainty'))}")
+            if metrics.get("ensemble_avg_r_auc_mse") is not None:
+                lines.append(f"- Средний R-AUC MSE по ансамблю: {fmt_val(metrics.get('ensemble_avg_r_auc_mse'))}")
+            if metrics.get("n_models") is not None:
+                lines.append(f"- Размер ансамбля: {metrics.get('n_models')}")
+            lines.append("")
+        
+        # Plots
+        plot_dir = Path(main.get("plots_dir", "")) if main.get("plots_dir") else None
+        if plot_dir and plot_dir.exists():
+            lines.append("### Ключевые графики")
+            lines.append("")
+            plot_defs = [
+                ("val_error_retention.png", "Error-Retention (валидация)"),
+                ("val_rejection_curve.png", "Rejection Curve (валидация)"),
+                ("val_retention_vs_rejection.png", "Retention vs Rejection (валидация)"),
+                ("val_calibration.png", "Calibration Curve (валидация)"),
+                ("val_calibration_before_after.png", "Calibration before/after conformal (валидация)"),
+                ("val_residual_hist.png", "Residual histogram (валидация)"),
+                ("val_residual_qq.png", "Residual QQ (валидация)"),
+                ("val_residual_vs_pred.png", "Residual vs pred (валидация)"),
+                ("val_residual_vs_uncertainty.png", "Residual vs uncertainty (валидация)"),
+                ("val_uncertainty_vs_error.png", "|error| vs uncertainty (валидация)"),
+                ("val_uncertainty_by_error_quantile.png", "Uncertainty by error quantile (валидация)"),
+                ("val_pi_width_80.png", "PI width dist @80%"),
+                ("val_pi_width_90.png", "PI width dist @90%"),
+                ("val_pi_width_95.png", "PI width dist @95%"),
+                ("test_error_retention.png", "Error-Retention (тест)"),
+                ("test_rejection_curve.png", "Rejection Curve (тест)"),
+                ("test_retention_vs_rejection.png", "Retention vs Rejection (тест)"),
+                ("test_calibration.png", "Calibration Curve (тест)"),
+                ("test_calibration_before_after.png", "Calibration before/after conformal (тест)"),
+                ("test_residual_hist.png", "Residual histogram (тест)"),
+                ("test_residual_qq.png", "Residual QQ (тест)"),
+                ("test_residual_vs_pred.png", "Residual vs pred (тест)"),
+                ("test_residual_vs_uncertainty.png", "Residual vs uncertainty (тест)"),
+                ("test_uncertainty_vs_error.png", "|error| vs uncertainty (тест)"),
+                ("test_uncertainty_by_error_quantile.png", "Uncertainty by error quantile (тест)"),
+                ("test_pi_width_80.png", "PI width dist @80% (тест)"),
+                ("test_pi_width_90.png", "PI width dist @90% (тест)"),
+                ("test_pi_width_95.png", "PI width dist @95% (тест)"),
+            ]
+            for fname, title in plot_defs:
+                candidate = plot_dir / fname
+                if candidate.exists():
+                    lines.append(f"![{title}]({candidate.as_posix()})")
+                    lines.append("")
+            
+            # Training curves (ensemble models)
+            training_dir = plot_dir / "training"
+            if training_dir.exists():
+                lines.append("### Кривые обучения ансамбля HMTL")
+                lines.append("")
+                for img in sorted(training_dir.glob("model_*_training_curve.png")):
+                    lines.append(f"![Training {img.name}]({img.as_posix()})")
+                    lines.append("")
+        lines.append("")
     else:
         lines.append("Main experiment results not found.")
-    lines.append("")
+        lines.append("")
     
     # Multi-seed results section
     lines.append("## 2. Multi-Seed Experiments")
@@ -154,6 +287,31 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
                 lines.append(f"| {metric} | {mean_val:.6f} | {std_val:.6f} |")
         
         lines.append("")
+
+        # Coverage aggregation across seeds (if available)
+        coverage_levels = ["0.8", "0.9", "0.95"]
+        coverage_stats = {}
+        for level in coverage_levels:
+            vals = []
+            for seed_result in multi_seed.get("individual_results", []):
+                cov = seed_result.get("coverage", {}).get(level)
+                if cov is not None:
+                    vals.append(cov)
+            if vals:
+                coverage_stats[level] = {"mean": float(np.mean(vals)), "std": float(np.std(vals))}
+        
+        if coverage_stats:
+            lines.append("### Покрытие (Mean ± Std)")
+            lines.append("")
+            lines.append("| Level | Mean | Std |")
+            lines.append("|-------|------|-----|")
+            for level in coverage_levels:
+                if level in coverage_stats:
+                    lines.append(
+                        f"| {int(float(level)*100)}% | {coverage_stats[level]['mean']*100:.2f}% | "
+                        f"{coverage_stats[level]['std']*100:.2f}% |"
+                    )
+            lines.append("")
         lines.append("### Individual Seed Results")
         lines.append("")
         if "individual_results" in multi_seed:
@@ -163,6 +321,12 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
                 lines.append(f"**Seed {seed}:**")
                 lines.append(f"- RMSE: {metrics.get('rmse', 0):.6f}")
                 lines.append(f"- R-AUC MSE: {metrics.get('r_auc_mse', 0):.6f}")
+                lines.append("")
+        if multi_seed.get("plot_files"):
+            lines.append("### Визуализация по сиду")
+            lines.append("")
+            for pf in multi_seed.get("plot_files", []):
+                lines.append(f"![Multi-seed]({Path(pf).as_posix()})")
                 lines.append("")
     else:
         lines.append("Multi-seed experiment results not found.")
@@ -212,12 +376,29 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
                 lines.append("- **Rejection AUC**: Площадь под кривой отбрасывания (rejection curve).")
                 lines.append("- **F-Beta AUC**: Площадь под кривой F-beta для оценки качества неопределенности.")
                 lines.append("")
+            
+            # Визуализация барчартов
+            if baselines.get("plot"):
+                plot_path = Path(baselines["plot"])
+                if plot_path.exists():
+                    lines.append(f"![Baseline metrics]({plot_path.as_posix()})")
+                    lines.append("")
+            cb_curve = Path("experiments/baselines/catboost_training_curve.png")
+            if cb_curve.exists():
+                lines.append(f"![CatBoost training]({cb_curve.as_posix()})")
+                lines.append("")
+            delta_plot = Path("experiments/baselines/baseline_delta_vs_hmtl.png")
+            if delta_plot.exists():
+                lines.append(f"![Δ vs HMTL]({delta_plot.as_posix()})")
+                lines.append("")
         
         lines.append("### Best Models")
         lines.append("")
         if "best_models" in baselines:
             for metric, best in baselines["best_models"].items():
                 lines.append(f"- **{metric}:** {best['model']} ({best['value']:.6f})")
+        lines.append("")
+        lines.append("_HMTL включен в сравнение базлайнов по умолчанию._")
         lines.append("")
     else:
         lines.append("Baseline comparison results not found.")
@@ -240,6 +421,20 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
         best_rmse = results["baselines"]["best_models"].get("RMSE")
         if best_rmse:
             findings.append(f"- **Best RMSE:** {best_rmse['model']} ({best_rmse['value']:.6f})")
+    
+    if results.get("main_experiment") and results["main_experiment"].get("metrics"):
+        m = results["main_experiment"]["metrics"]
+        if m.get("val_rmse") is not None:
+            findings.append(
+                f"- **HMTL (val)** RMSE {m.get('val_rmse', 0):.6f}, R-AUC MSE {m.get('val_r_auc_mse', 0):.6f}"
+            )
+        if m.get("test_rmse") is not None:
+            findings.append(
+                f"- **HMTL (test)** RMSE {m.get('test_rmse', 0):.6f}, R-AUC MSE {m.get('test_r_auc_mse', 0):.6f}"
+            )
+        cov_90 = m.get("val_coverage@90")
+        if cov_90 is not None:
+            findings.append(f"- **Conformal coverage@90 (val):** {cov_90*100:.2f}%")
     
     if results.get("multi_seed") and results["multi_seed"].get("aggregated_metrics"):
         r_auc_stats = results["multi_seed"]["aggregated_metrics"].get("r_auc_mse", {})
@@ -386,6 +581,15 @@ def main() -> None:
                 json.dump({"metrics": result["metrics"]}, f, indent=2, default=str)
             
             logger.info(f"Main experiment results saved to {main_results_file}")
+
+            # Copy generated plots into the report folder for embedding
+            plots_src = Path("experiments/plots")
+            plots_dst = main_output_dir / "plots"
+            if plots_src.exists():
+                shutil.copytree(plots_src, plots_dst, dirs_exist_ok=True)
+                logger.info(f"Main experiment plots copied to {plots_dst}")
+            else:
+                logger.warning("No plots found at experiments/plots to copy into report")
         except Exception as e:
             logger.error(f"Main experiment failed: {e}")
             logger.exception(e)
@@ -424,13 +628,21 @@ def main() -> None:
         logger.info("=" * 80)
         
         baseline_output_dir = output_dir / "baselines"
+        
+        # Try to use HMTL results from main experiment if available
+        main_results_file = output_dir / "main" / "results.json"
+        hmtl_from_main_arg = []
+        if main_results_file.exists():
+            hmtl_from_main_arg = ["--hmtl-from-main", str(main_results_file)]
+            logger.info(f"Will use HMTL results from main experiment: {main_results_file}")
+        
         baseline_cmd = [
             "python", "scripts/run_baselines.py",
             "--baselines"] + args.baseline_models + [
             "--data", args.data,
             "--train", args.train,
             "--output", str(baseline_output_dir),
-        ]
+        ] + hmtl_from_main_arg
         success = run_command(
             baseline_cmd,
             "Baseline comparisons",

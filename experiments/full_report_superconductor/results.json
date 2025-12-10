@@ -1,86 +1,336 @@
 {
-  "timestamp": "2025-12-04T01:25:22.646532",
+  "timestamp": "2025-12-10T16:09:34.655610",
   "main_experiment": {
-    "plots_dir": null
+    "metrics": {
+      "ensemble_avg_r_auc_mse": 0.05576541629343902,
+      "n_models": 20,
+      "val_rmse": 0.29672172716619705,
+      "val_mse": 0.08804378337249107,
+      "val_mae": 0.19074538042474987,
+      "val_r_auc_mse": 0.02499490825775838,
+      "val_mean_uncertainty": 0.3926795423030853,
+      "val_mean_epistemic": 0.1547165960073471,
+      "val_mean_aleatoric": 0.356158047914505,
+      "test_rmse": 0.2941798074731419,
+      "test_mse": 0.08654175912493484,
+      "test_mae": 0.18517960422648183,
+      "test_r_auc_mse": 0.02443424169802268,
+      "test_mean_uncertainty": 0.38979384303092957,
+      "val_coverage@80": 0.7996237064910631,
+      "val_width@80": 0.587195873260498,
+      "test_coverage@80": 0.8110014104372355,
+      "test_width@80": 0.587195873260498,
+      "val_coverage@90": 0.8998118532455315,
+      "val_width@90": 0.9059611558914185,
+      "test_coverage@90": 0.8998589562764457,
+      "test_width@90": 0.9059610962867737,
+      "val_coverage@95": 0.9501411100658513,
+      "val_width@95": 1.3192163705825806,
+      "test_coverage@95": 0.9515749882463563,
+      "test_width@95": 1.3192163705825806
+    },
+    "plots_dir": "experiments\\full_report_superconductor\\main\\plots",
+    "plot_files": [
+      "experiments\\full_report_superconductor\\main\\plots\\test_calibration.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_calibration_before_after.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_error_retention.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_pi_width_80.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_pi_width_90.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_pi_width_95.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_rejection_curve.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_residual_hist.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_residual_qq.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_residual_vs_pred.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_residual_vs_uncertainty.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_retention_vs_rejection.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_uncertainty_by_error_quantile.png",
+      "experiments\\full_report_superconductor\\main\\plots\\test_uncertainty_vs_error.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_calibration.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_calibration_before_after.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_error_retention.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_pi_width_80.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_pi_width_90.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_pi_width_95.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_rejection_curve.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_residual_hist.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_residual_qq.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_residual_vs_pred.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_residual_vs_uncertainty.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_retention_vs_rejection.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_uncertainty_by_error_quantile.png",
+      "experiments\\full_report_superconductor\\main\\plots\\val_uncertainty_vs_error.png"
+    ]
   },
-  "multi_seed": null,
+  "multi_seed": {
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "n_seeds": 3,
+    "aggregated_metrics": {
+      "rmse": {
+        "mean": 46.52410706501703,
+        "std": 0.0
+      },
+      "mse": {
+        "mean": 2164.4925381971675,
+        "std": 0.0
+      },
+      "mae": {
+        "mean": 34.79461805819738,
+        "std": 0.0
+      },
+      "r_auc_mse": {
+        "mean": 617.8155365997059,
+        "std": 0.0
+      },
+      "mean_uncertainty": {
+        "mean": 12.860828399658203,
+        "std": 0.0
+      },
+      "mean_epistemic": {
+        "mean": 5.109567165374756,
+        "std": 0.0
+      },
+      "mean_aleatoric": {
+        "mean": 11.614145278930664,
+        "std": 0.0
+      },
+      "rejection_ratio": {
+        "mean": 80.33684961202941,
+        "std": 0.0
+      },
+      "rejection_auc": {
+        "mean": 496.6945387587465,
+        "std": 0.0
+      },
+      "f_beta_auc": {
+        "mean": 0.6964270759941327,
+        "std": 0.0
+      },
+      "f_beta_95": {
+        "mean": 0.6895880635292583,
+        "std": 0.0
+      }
+    },
+    "individual_results": [
+      {
+        "seed": 43,
+        "metrics": {
+          "rmse": 46.52410706501703,
+          "mse": 2164.4925381971675,
+          "mae": 34.79461805819738,
+          "r_auc_mse": 617.8155365997059,
+          "mean_uncertainty": 12.860828399658203,
+          "mean_epistemic": 5.109567165374756,
+          "mean_aleatoric": 11.614145278930664
+        },
+        "coverage": {
+          "0.8": 0.0,
+          "0.9": 0.0,
+          "0.95": 0.0
+        },
+        "error_retention": {
+          "x": [
+            0.00047036688617121356,
+            0.020696142991533398,
+            0.040921919096895576,
+            0.061618062088428974,
+            0.08184383819379115,
+            0.10206961429915334,
+            0.12276575729068674,
+            0.14299153339604892,
+            0.1632173095014111,
+            0.1839134524929445,
+            0.2041392285983067,
+            0.22483537158984007,
+            0.24506114769520226,
+            0.26528692380056446,
+            0.28598306679209784,
+            0.30620884289746003,
+            0.3264346190028222,
+            0.3471307619943556,
+            0.3673565380997178,
+            0.38758231420507994,
+            0.4082784571966134,
+            0.42850423330197557,
+            0.44920037629350895,
+            0.46942615239887114,
+            0.4896519285042333,
+            0.5103480714957667,
+            0.5305738476011289,
+            0.550799623706491,
+            0.5714957666980245,
+            0.5917215428033866,
+            0.6124176857949201,
+            0.6326434619002822,
+            0.6528692380056444,
+            0.6735653809971778,
+            0.69379115710254,
+            0.7140169332079022,
+            0.7347130761994356,
+            0.7549388523047977,
+            0.7751646284101599,
+            0.7958607714016933,
+            0.8160865475070554,
+            0.8367826904985889,
+            0.8570084666039511,
+            0.8772342427093133,
+            0.8979303857008467,
+            0.9181561618062088,
+            0.938381937911571,
+            0.9590780809031044,
+            0.9793038570084666,
+            1.0
+          ],
+          "y": [
+            18.715371605270953,
+            29.86895880355239,
+            28.624875587207153,
+            29.41855061591432,
+            30.093220702881776,
+            30.077858016874572,
+            30.043805222114056,
+            31.10037854342816,
+            33.436940944160376,
+            33.59200142958938,
+            34.43495863082602,
+            36.05812177285165,
+            38.1719390564749,
+            41.36364196764593,
+            48.954412267244585,
+            55.53937694331375,
+            65.93532290009566,
+            72.42221426480471,
+            78.94302633301068,
+            93.53925240721246,
+            106.73700655026165,
+            123.37250772902351,
+            143.78352498142377,
+            159.8486263470428,
+            172.61483704884836,
+            188.6375625003984,
+            203.55623005523873,
+            217.86320486507233,
+            229.11515568427654,
+            325.13814518794754,
+            473.31224069754086,
+            619.5520441153138,
+            733.5967868444789,
+            858.1256633217778,
+            977.743566536169,
+            1113.3748952981605,
+            1205.617360083145,
+            1293.0432053332413,
+            1369.5287646050604,
+            1438.8626037392476,
+            1511.4034351014482,
+            1585.123482332161,
+            1649.1505505730488,
+            1743.593474587896,
+            1808.3305985224138,
+            1883.9821883280392,
+            1991.2859827093082,
+            2074.492562334836,
+            2129.546917737958,
+            2164.492538197168
+          ]
+        }
+      }
+    ],
+    "plot_files": [
+      "experiments\\full_report_superconductor\\multi_seed\\coverage_distributions.png",
+      "experiments\\full_report_superconductor\\multi_seed\\error_retention_seeds.png",
+      "experiments\\full_report_superconductor\\multi_seed\\metric_distributions.png"
+    ]
+  },
   "baselines": {
     "comparison_table": [
       {
         "Model": "single_mlp",
-        "RMSE": 0.624756546208256,
-        "MSE": 0.3903207420300688,
-        "MAE": 0.4545479762784293,
-        "R-AUC MSE": 0.1392739785438787,
-        "Mean Uncertainty": 0.4315267503261566,
+        "RMSE": 0.3541985203742963,
+        "MSE": 0.1254565918353408,
+        "MAE": 0.2281637802700024,
+        "R-AUC MSE": 0.0346054550933519,
+        "Mean Uncertainty": 0.3832132518291473,
         "Coverage@80": 0.0,
         "Coverage@90": 0.0,
         "Coverage@95": 0.0,
-        "Rejection Ratio (%)": 70.82771674831073,
-        "Rejection AUC": 0.0954364945863744,
-        "F-Beta AUC": 0.6001794791731581,
-        "F-Beta@95": 0.6824521569447627
+        "Rejection Ratio (%)": 73.23444169247605,
+        "Rejection AUC": 0.0258702034517086,
+        "F-Beta AUC": 0.6379561681495896,
+        "F-Beta@95": 0.6850470320663975,
+        "\u0394RMSE_vs_HMTL": 0.0574767932080992,
+        "\u0394R-AUC_vs_HMTL": 0.0096105468355935
       },
       {
         "Model": "flat_mtl",
-        "RMSE": 0.679206888585135,
-        "MSE": 0.4613219975015,
-        "MAE": 0.4930100141960655,
-        "R-AUC MSE": 0.1734433414832638,
-        "Mean Uncertainty": 0.2190887033939361,
+        "RMSE": 0.3463597011222037,
+        "MSE": 0.1199650425614622,
+        "MAE": 0.2192212459832051,
+        "R-AUC MSE": 0.0294810122799111,
+        "Mean Uncertainty": 0.3067641258239746,
         "Coverage@80": 0.0,
         "Coverage@90": 0.0,
         "Coverage@95": 0.0,
-        "Rejection Ratio (%)": 70.24913152290824,
-        "Rejection AUC": 0.1135395112491745,
-        "F-Beta AUC": 0.5931551144752116,
-        "F-Beta@95": 0.6805060006035367
+        "Rejection Ratio (%)": 75.81671817113117,
+        "Rejection AUC": 0.0230136661015072,
+        "F-Beta AUC": 0.6438879315974553,
+        "F-Beta@95": 0.6824521569447627,
+        "\u0394RMSE_vs_HMTL": 0.0496379739560066,
+        "\u0394R-AUC_vs_HMTL": 0.0044861040221527
       },
       {
         "Model": "catboost",
-        "RMSE": 0.3431507108855613,
-        "MSE": 0.1177524103812661,
-        "MAE": 0.223610237639099,
-        "R-AUC MSE": 0.0300009021779522,
-        "Mean Uncertainty": 0.1060929511991207,
+        "RMSE": 0.391340723074255,
+        "MSE": 0.1531475615362807,
+        "MAE": 0.2684511451587633,
+        "R-AUC MSE": 0.0420737503382922,
+        "Mean Uncertainty": 0.1601427406530929,
         "Coverage@80": 0.8000940733772343,
         "Coverage@90": 0.9002822201317028,
         "Coverage@95": 0.9501411100658512,
-        "Rejection Ratio (%)": 77.55577164077596,
-        "Rejection AUC": 0.0223265900998927,
-        "F-Beta AUC": 0.6297116730511436,
-        "F-Beta@95": 0.6843983132859887
+        "Rejection Ratio (%)": 77.44710550365247,
+        "Rejection AUC": 0.0308446048287837,
+        "F-Beta AUC": 0.6353182412505388,
+        "F-Beta@95": 0.6843983132859887,
+        "\u0394RMSE_vs_HMTL": 0.0946189959080579,
+        "\u0394R-AUC_vs_HMTL": 0.0170788420805338
       },
       {
         "Model": "hmtl",
-        "RMSE": 0.5071362179326765,
-        "MSE": 0.2571871435390592,
-        "MAE": 0.3493425836152908,
-        "R-AUC MSE": 0.0821324981116716,
-        "Mean Uncertainty": 24.598234176635746,
+        "RMSE": 0.296721727166197,
+        "MSE": 0.088043783372491,
+        "MAE": 0.1907453804247498,
+        "R-AUC MSE": 0.0249949082577583,
+        "Mean Uncertainty": 0.3926795423030853,
         "Coverage@80": 0.7996237064910631,
-        "Coverage@90": 0.9002822201317028,
-        "Coverage@95": 0.94967074317968,
-        "Rejection Ratio (%)": 68.78795318001184,
-        "Rejection AUC": 0.0610957444366121,
-        "F-Beta AUC": 0.6231869120081573,
-        "F-Beta@95": 0.6779111254819018
+        "Coverage@90": 0.8998118532455315,
+        "Coverage@95": 0.9501411100658512,
+        "Rejection Ratio (%)": NaN,
+        "Rejection AUC": NaN,
+        "F-Beta AUC": NaN,
+        "F-Beta@95": NaN,
+        "\u0394RMSE_vs_HMTL": 0.0,
+        "\u0394R-AUC_vs_HMTL": 0.0
       }
     ],
     "best_models": {
       "RMSE": {
-        "model": "catboost",
-        "value": 0.3431507108855613
+        "model": "hmtl",
+        "value": 0.296721727166197
       },
       "R-AUC MSE": {
-        "model": "catboost",
-        "value": 0.0300009021779522
+        "model": "hmtl",
+        "value": 0.0249949082577583
       },
       "MAE": {
-        "model": "catboost",
-        "value": 0.223610237639099
+        "model": "hmtl",
+        "value": 0.1907453804247498
       }
-    }
+    },
+    "plot": "experiments\\full_report_superconductor\\baselines\\baseline_comparison.png"
   },
   "ablation": null
 }

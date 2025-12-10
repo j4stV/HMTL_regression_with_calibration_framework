@@ -6,13 +6,14 @@ paths:
   target: quality
 
 preprocess:
-  impute_const: -1
+  impute_const: -1.0
+  use_dynamic_binning: true  # Use dynamic binning approach
   quantile_binning:
-    enabled: true
+    enabled: false  # Deprecated, use use_dynamic_binning instead
     bins: 5
   standardize: true
   pca:
     enabled: true
-    n_components: 0.95
+    n_components: null  # null = all components, or specify float/int
   target_standardize: true
 

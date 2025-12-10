@@ -108,6 +108,10 @@ def run_multi_seed_experiment(
                     for level in [0.80, 0.90, 0.95]
                     if level in result["val_results"].pi_metrics_after
                 },
+                "error_retention": {
+                    "x": result["val_results"].error_retention_x.tolist(),
+                    "y": result["val_results"].error_retention_y.tolist(),
+                },
             })
             
             logger.info(f"Seed {seed} completed - R-AUC MSE: {metrics.r_auc_mse:.6f}")
@@ -226,6 +230,35 @@ def create_metric_distribution_plots(results: list[dict], output_dir: Path) -> N
     plt.savefig(plot_path, dpi=300, bbox_inches="tight")
     plt.close()
     logger.info(f"Saved coverage distributions plot to {plot_path}")
+    
+    # Error-retention overlay per seed
+    try:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ys = []
+        xs = None
+        for r in results:
+            er = r.get("error_retention")
+            if er:
+                x = np.array(er["x"])
+                y = np.array(er["y"])
+                xs = x if xs is None else xs
+                ax.plot(x, y, alpha=0.4, linewidth=1.5, label=f"seed {r['seed']}")
+                ys.append(y)
+        if ys:
+            mean_y = np.mean(np.stack(ys, axis=0), axis=0)
+            ax.plot(xs, mean_y, color="black", linewidth=2.5, label="mean")
+        ax.set_xlabel("Retention fraction")
+        ax.set_ylabel("Mean MSE")
+        ax.set_title("Error-Retention curves by seed")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        er_plot = output_dir / "error_retention_seeds.png"
+        plt.savefig(er_plot, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"Saved seed-wise error-retention plot to {er_plot}")
+    except Exception as e:
+        logger.warning(f"Failed to create error-retention overlay: {e}")
 
 
 if __name__ == "__main__":

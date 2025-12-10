@@ -22,8 +22,8 @@ class TrainConfig:
     epochs: int = 200
     batch_size: int = 256
     patience: int = 20
-    aux_weight: float = 0.3
-    sigma_reg_weight: float = 0.01  # Регуляризация для предотвращения взрыва sigma
+    aux_weight: float = 0.5  # Default 0.5  (loss_weights for projection)
+    sigma_reg_weight: float = 0.0  # Disabled by default 
     optimizer: str = "radam_lookahead"  # "radam_lookahead" or "adamw"
     lookahead_k: int = 6
     lookahead_alpha: float = 0.5
@@ -31,14 +31,62 @@ class TrainConfig:
     seed: int | None = None
 
 
-def compute_bins(y: np.ndarray, n_bins: int) -> np.ndarray:
-    # равные квантили
-    quantiles = np.quantile(y, np.linspace(0, 1, n_bins + 1))
-    quantiles[0] -= 1e-9; quantiles[-1] += 1e-9
-    return np.digitize(y, quantiles[1:-1])
+def compute_bins(y: np.ndarray, n_bins: int, use_rounding: bool = False) -> np.ndarray:
+    """Compute bins for auxiliary task.
+    
+    Args:
+        y: Target values
+        n_bins: Number of bins (used only if use_rounding=False)
+        use_rounding: If True, use rounding approach (round to integers, 
+                     clip to 0.1%-99.9% percentile range)
+    
+    Returns:
+        Array of bin indices
+    """
+    if use_rounding:
+        # Approach: round to integers, create classes from rounded values
+        all_values = sorted(y.tolist())
+        n = len(all_values)
+        if n <= 10000:
+            # Fallback to quantile approach for small datasets
+            quantiles = np.quantile(y, np.linspace(0, 1, n_bins + 1))
+            quantiles[0] -= 1e-9
+            quantiles[-1] += 1e-9
+            return np.digitize(y, quantiles[1:-1])
+        
+        # Get 0.1% and 99.9% percentiles
+        y001 = all_values[int(round(0.001 * (n - 1)))]
+        y999 = all_values[int(round(0.999 * (n - 1)))]
+        
+        # Create integer classes
+        min_temp = int(np.floor(y001))
+        max_temp = int(np.ceil(y999))
+        n_classes = max_temp - min_temp + 1
+        
+        # Map rounded values to class indices
+        y_rounded = np.round(y).astype(np.int32)
+        y_bins = np.clip(y_rounded, min_temp, max_temp) - min_temp
+        
+        return y_bins.astype(np.int64)
+    else:
+        # Equal quantiles approach (original)
+        quantiles = np.quantile(y, np.linspace(0, 1, n_bins + 1))
+        quantiles[0] -= 1e-9
+        quantiles[-1] += 1e-9
+        return np.digitize(y, quantiles[1:-1])
 
 
-def train_model(model: nn.Module, X_tr: np.ndarray, y_tr: np.ndarray, X_va: np.ndarray, y_va: np.ndarray, n_bins: int, cfg: TrainConfig) -> float:
+def train_model(
+    model: nn.Module,
+    X_tr: np.ndarray,
+    y_tr: np.ndarray,
+    X_va: np.ndarray,
+    y_va: np.ndarray,
+    n_bins: int,
+    cfg: TrainConfig,
+    history: list[dict] | None = None,
+    history_meta: dict | None = None,
+) -> float:
     logger = get_logger("train")
     
     # Set random seed if provided
@@ -71,7 +119,10 @@ def train_model(model: nn.Module, X_tr: np.ndarray, y_tr: np.ndarray, X_va: np.n
     logger.debug(f"Training data shape: {X_tr.shape}, Validation data shape: {X_va.shape}")
     logger.debug(f"Training config: lr={cfg.lr}, epochs={cfg.epochs}, batch_size={cfg.batch_size}, patience={cfg.patience}, optimizer={cfg.optimizer}")
 
-    y_bins_tr = compute_bins(y_tr, n_bins)
+    # Determine if we should use rounding approach (for contrastive learning)
+    aux_task = getattr(model, "aux_task", "bins")
+    use_rounding = (aux_task == "contrastive")
+    y_bins_tr = compute_bins(y_tr, n_bins, use_rounding=use_rounding)
     train_ds = TensorDataset(
         torch.tensor(X_tr, dtype=torch.float32),
         torch.tensor(y_tr.reshape(-1, 1), dtype=torch.float32),
@@ -103,6 +154,7 @@ def train_model(model: nn.Module, X_tr: np.ndarray, y_tr: np.ndarray, X_va: np.n
     ce = nn.CrossEntropyLoss()
 
     best = float("inf")
+    best_epoch = None
     wait = 0
     
     # Determine aux task type from model
@@ -110,6 +162,7 @@ def train_model(model: nn.Module, X_tr: np.ndarray, y_tr: np.ndarray, X_va: np.n
     
     # Epoch loop with progress bar
     epoch_pbar = tqdm(range(cfg.epochs), desc="Training", unit="epoch", leave=True)
+    early_stop_epoch = None
     for epoch in epoch_pbar:
         model.train()
         epoch_loss = 0.0
@@ -139,8 +192,8 @@ def train_model(model: nn.Module, X_tr: np.ndarray, y_tr: np.ndarray, X_va: np.n
                         # Classification head
                         loss = loss + cfg.aux_weight * ce(aux_output, yb_bin)
                     elif aux_task == "contrastive":
-                        # Contrastive learning
-                        aux_loss = n_pairs_loss(aux_output, yb_bin, temperature=0.1)
+                        # Contrastive learning (temperature=0.5 )
+                        aux_loss = n_pairs_loss(aux_output, yb_bin, temperature=0.5)
                         loss = loss + cfg.aux_weight * aux_loss
             
             optim.zero_grad()
@@ -174,6 +227,9 @@ def train_model(model: nn.Module, X_tr: np.ndarray, y_tr: np.ndarray, X_va: np.n
             y_pred = np.concatenate(preds)
             y_sigma = np.concatenate(sigmas)
             y_true = np.concatenate(gts)
+            mse = float(np.mean((y_true - y_pred) ** 2))
+            rmse = float(np.sqrt(mse))
+            mae = float(np.mean(np.abs(y_true - y_pred)))
             score = r_auc_mse((y_true - y_pred) ** 2, y_sigma)
 
         # Update progress bar with metrics
@@ -187,6 +243,7 @@ def train_model(model: nn.Module, X_tr: np.ndarray, y_tr: np.ndarray, X_va: np.n
         if score < best:
             improvement = best - score if best != float("inf") else 0.0
             best = score
+            best_epoch = epoch
             wait = 0
             logger.info(f"Epoch {epoch+1}: New best score! {score:.6f} (improvement: {improvement:.6f})")
         else:
@@ -194,9 +251,22 @@ def train_model(model: nn.Module, X_tr: np.ndarray, y_tr: np.ndarray, X_va: np.n
             logger.debug(f"Epoch {epoch+1}: Score {score:.6f} (no improvement, patience: {wait}/{cfg.patience})")
             if wait >= cfg.patience:
                 logger.info(f"Early stopping triggered at epoch {epoch+1} (patience: {cfg.patience})")
+                early_stop_epoch = epoch
                 epoch_pbar.close()
                 break
+        
+        if history is not None:
+            history.append({
+                "epoch": epoch,
+                "train_loss": float(avg_train_loss),
+                "val_r_auc_mse": float(score),
+                "val_rmse": float(rmse),
+                "val_mae": float(mae),
+            })
     
+    if history_meta is not None:
+        history_meta["best_epoch"] = best_epoch
+        history_meta["early_stop_epoch"] = early_stop_epoch
     logger.info(f"Training completed. Best validation score: {best:.6f}")
     return best
 
