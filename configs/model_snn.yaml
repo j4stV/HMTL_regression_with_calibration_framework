@@ -20,3 +20,7 @@ regression_head:
   out_mu: 1
   out_sigma: 1
   # scale_coeff is computed automatically from target std
+
+
+# как влияет размер датасета на разницу между метриками качества HMTL и catboost и др
+# И как влияет contrastive по сравнению с bins

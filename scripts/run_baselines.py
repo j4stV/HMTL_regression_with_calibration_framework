@@ -288,9 +288,17 @@ def main() -> None:
                 if width_key in metrics_dict:
                     results["hmtl"][f"width@{level}"] = metrics_dict[width_key]
             
-            # Add reference metrics if available (they might be in val_results if stored)
-            # Check if val_results exists in the JSON
-            if "val_results" in hmtl_from_main and hmtl_from_main["val_results"]:
+            # Add reference metrics if available (check both metrics dict and val_results)
+            # First check in metrics dict (new format)
+            if metrics_dict.get("val_rejection_ratio") is not None:
+                results["hmtl"]["rejection_ratio"] = metrics_dict["val_rejection_ratio"]
+                results["hmtl"]["rejection_auc"] = metrics_dict.get("val_rejection_auc")
+            if metrics_dict.get("val_f_beta_auc") is not None:
+                results["hmtl"]["f_beta_auc"] = metrics_dict["val_f_beta_auc"]
+                results["hmtl"]["f_beta_95"] = metrics_dict.get("val_f_beta_95")
+            
+            # Fallback: check if val_results exists in the JSON (old format)
+            if "rejection_ratio" not in results["hmtl"] and "val_results" in hmtl_from_main and hmtl_from_main["val_results"]:
                 val_res = hmtl_from_main["val_results"]
                 if isinstance(val_res, dict) and "metrics" in val_res:
                     val_metrics = val_res["metrics"]

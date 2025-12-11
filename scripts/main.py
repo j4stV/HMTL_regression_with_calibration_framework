@@ -308,12 +308,27 @@ def run_experiment(
         "val_mean_aleatoric": val_results.metrics.mean_aleatoric,
     }
     
+    # Add reference metrics (rejection ratio, rejection AUC, F-Beta metrics)
+    if val_results.metrics.rejection_ratio is not None:
+        final_metrics["val_rejection_ratio"] = val_results.metrics.rejection_ratio
+        final_metrics["val_rejection_auc"] = val_results.metrics.rejection_auc
+    if val_results.metrics.f_beta_auc is not None:
+        final_metrics["val_f_beta_auc"] = val_results.metrics.f_beta_auc
+        final_metrics["val_f_beta_95"] = val_results.metrics.f_beta_95
+    
     if test_results is not None:
         final_metrics["test_rmse"] = test_results.metrics.rmse
         final_metrics["test_mse"] = test_results.metrics.mse
         final_metrics["test_mae"] = test_results.metrics.mae
         final_metrics["test_r_auc_mse"] = test_results.metrics.r_auc_mse
         final_metrics["test_mean_uncertainty"] = test_results.metrics.mean_uncertainty
+        # Add reference metrics for test set
+        if test_results.metrics.rejection_ratio is not None:
+            final_metrics["test_rejection_ratio"] = test_results.metrics.rejection_ratio
+            final_metrics["test_rejection_auc"] = test_results.metrics.rejection_auc
+        if test_results.metrics.f_beta_auc is not None:
+            final_metrics["test_f_beta_auc"] = test_results.metrics.f_beta_auc
+            final_metrics["test_f_beta_95"] = test_results.metrics.f_beta_95
     
     for coverage_level in [0.80, 0.90, 0.95]:
         if coverage_level in val_results.pi_metrics_after:
