@@ -28,13 +28,21 @@ class PreprocessConfig:
 
 
 class TabularPreprocessor:
-    def __init__(self, config: PreprocessConfig, feature_columns: Optional[list[str]] = None, target_column: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        config: PreprocessConfig,
+        feature_columns: Optional[list[str]] = None,
+        target_column: Optional[str] = None,
+        task_type: str = "regression",  # NEW: "regression" or "classification"
+    ) -> None:
         self.config = config
         self.feature_columns = feature_columns
         self.target_column = target_column
+        self.task_type = task_type
         self.pipeline: Optional[Pipeline] = None
         self.target_mean_: Optional[float] = None
         self.target_std_: Optional[float] = None
+        self.num_classes_: Optional[int] = None  # NEW: For classification tasks
 
     def fit(self, df: pd.DataFrame) -> "TabularPreprocessor":
         logger = get_logger("preprocess")
@@ -153,14 +161,29 @@ class TabularPreprocessor:
                     logger.info(f"PCA: {n_components} components explain {explained_variance:.4%} of variance")
                     logger.debug(f"PCA explained variance ratios: {pca_step.explained_variance_ratio_[:10]}...")
 
-            if self.target_column is not None and self.target_column in df.columns and self.config.target_standardize:
-                y = df[self.target_column].to_numpy(dtype=float)
-                self.target_mean_ = float(np.mean(y))
-                std = float(np.std(y))
-                self.target_std_ = std if std > 1e-12 else 1.0
-                logger.info(f"Target standardization: mean={self.target_mean_:.6f}, std={self.target_std_:.6f}")
-            elif self.target_column is not None and self.target_column in df.columns:
-                logger.debug("Target standardization disabled")
+            # Target preprocessing - different for regression vs classification
+            if self.target_column is not None and self.target_column in df.columns:
+                if self.task_type == "regression" and self.config.target_standardize:
+                    # Regression: standardize target
+                    y = df[self.target_column].to_numpy(dtype=float)
+                    self.target_mean_ = float(np.mean(y))
+                    std = float(np.std(y))
+                    self.target_std_ = std if std > 1e-12 else 1.0
+                    logger.info(f"Target standardization (regression): mean={self.target_mean_:.6f}, std={self.target_std_:.6f}")
+                elif self.task_type == "classification":
+                    # Classification: detect number of classes, no standardization
+                    y = df[self.target_column].to_numpy(dtype=int)
+                    unique_classes = np.unique(y)
+                    self.num_classes_ = len(unique_classes)
+                    logger.info(f"Classification task: {self.num_classes_} classes detected (labels: {unique_classes.tolist()})")
+                    # Verify labels are 0-indexed
+                    if not np.array_equal(unique_classes, np.arange(self.num_classes_)):
+                        logger.warning(
+                            f"Class labels are not 0-indexed consecutive integers! "
+                            f"Found: {unique_classes.tolist()}, expected: {list(range(self.num_classes_))}"
+                        )
+                else:
+                    logger.debug("Target standardization disabled")
 
         return self
 
@@ -176,13 +199,18 @@ class TabularPreprocessor:
 
         y_t: Optional[np.ndarray] = None
         if self.target_column is not None and self.target_column in df.columns:
-            y = df[self.target_column].to_numpy(dtype=float)
-            if self.config.target_standardize and self.target_mean_ is not None and self.target_std_ is not None:
-                y_t = (y - self.target_mean_) / self.target_std_
-                logger.debug(f"Target standardized: mean={np.mean(y_t):.6f}, std={np.std(y_t):.6f}")
-            else:
-                y_t = y
-                logger.debug(f"Target not standardized: mean={np.mean(y_t):.6f}, std={np.std(y_t):.6f}")
+            if self.task_type == "regression":
+                y = df[self.target_column].to_numpy(dtype=float)
+                if self.config.target_standardize and self.target_mean_ is not None and self.target_std_ is not None:
+                    y_t = (y - self.target_mean_) / self.target_std_
+                    logger.debug(f"Target standardized: mean={np.mean(y_t):.6f}, std={np.std(y_t):.6f}")
+                else:
+                    y_t = y
+                    logger.debug(f"Target not standardized: mean={np.mean(y_t):.6f}, std={np.std(y_t):.6f}")
+            elif self.task_type == "classification":
+                # Classification: return class labels as integers (no standardization)
+                y_t = df[self.target_column].to_numpy(dtype=int)
+                logger.debug(f"Classification target: {len(y_t)} samples, {self.num_classes_} classes")
         
         return X_t, y_t
 

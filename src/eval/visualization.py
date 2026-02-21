@@ -529,6 +529,108 @@ def plot_training_history(
     plt.close(fig)
 
 
+def _confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, num_classes: int) -> np.ndarray:
+    """Compute confusion matrix without external dependencies."""
+    cm = np.zeros((num_classes, num_classes), dtype=int)
+    for yt, yp in zip(y_true.astype(int), y_pred.astype(int)):
+        if 0 <= yt < num_classes and 0 <= yp < num_classes:
+            cm[yt, yp] += 1
+    return cm
+
+
+def visualize_classification_results(
+    results: dict,
+    output_dir: Path | str,
+    prefix: str = "",
+) -> None:
+    """Create visualizations for classification evaluation results."""
+    logger = get_logger("eval.visualization")
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    y_true = np.asarray(results.get("y_true"))
+    probs_mean = np.asarray(results.get("predictions", {}).get("probs_mean"))
+    uncertainty = results.get("uncertainty", {})
+    uncertainty_total = np.asarray(uncertainty.get("total", []))
+    uncertainty_epistemic = np.asarray(uncertainty.get("epistemic", []))
+    uncertainty_aleatoric = np.asarray(uncertainty.get("aleatoric", []))
+
+    if y_true.size == 0 or probs_mean.size == 0:
+        logger.warning("Skipping classification visualization: missing predictions or labels")
+        return
+
+    y_pred = np.argmax(probs_mean, axis=-1)
+    confidence = np.max(probs_mean, axis=-1)
+    num_classes = probs_mean.shape[1]
+
+    # 1) Confusion matrix
+    cm = _confusion_matrix(y_true, y_pred, num_classes=num_classes)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax, cbar=False)
+    ax.set_xlabel("Predicted class")
+    ax.set_ylabel("True class")
+    ax.set_title(f"{prefix}Confusion Matrix", fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(output_dir / f"{prefix}confusion_matrix.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # 2) Confidence histogram
+    correct_mask = (y_pred == y_true)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.hist(confidence[correct_mask], bins=20, alpha=0.6, label="Correct", color="seagreen")
+    ax.hist(confidence[~correct_mask], bins=20, alpha=0.6, label="Incorrect", color="tomato")
+    ax.set_xlabel("Predicted confidence")
+    ax.set_ylabel("Count")
+    ax.set_title(f"{prefix}Confidence Distribution", fontweight="bold")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(output_dir / f"{prefix}confidence_hist.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # 3) Uncertainty histograms
+    if uncertainty_total.size > 0:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.hist(uncertainty_total, bins=20, alpha=0.5, label="Total", color="steelblue")
+        if uncertainty_epistemic.size > 0:
+            ax.hist(uncertainty_epistemic, bins=20, alpha=0.5, label="Epistemic", color="darkorange")
+        if uncertainty_aleatoric.size > 0:
+            ax.hist(uncertainty_aleatoric, bins=20, alpha=0.5, label="Aleatoric", color="mediumpurple")
+        ax.set_xlabel("Uncertainty")
+        ax.set_ylabel("Count")
+        ax.set_title(f"{prefix}Uncertainty Distribution", fontweight="bold")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(output_dir / f"{prefix}uncertainty_hist.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+    # 4) Coverage vs target level for conformal sets
+    conformal_results = results.get("conformal_results", {})
+    if conformal_results:
+        coverage_levels = sorted(conformal_results.keys())
+        actual_coverages = [conformal_results[level]["coverage"] for level in coverage_levels]
+        plot_calibration_curve(
+            coverage_levels=coverage_levels,
+            actual_coverages=actual_coverages,
+            save_path=output_dir / f"{prefix}classification_conformal_coverage.png",
+            title=f"{prefix}Classification Conformal Coverage",
+        )
+
+        mean_set_sizes = [conformal_results[level]["mean_set_size"] for level in coverage_levels]
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.bar([f"{int(level*100)}%" for level in coverage_levels], mean_set_sizes, color="teal", alpha=0.8)
+        ax.set_xlabel("Target coverage level")
+        ax.set_ylabel("Mean prediction set size")
+        ax.set_title(f"{prefix}Conformal Set Size", fontweight="bold")
+        ax.grid(True, axis="y", alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(output_dir / f"{prefix}classification_set_size.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+    logger.info(f"Classification visualizations saved to {output_dir}")
+
+
 def visualize_evaluation_results(
     results: EvaluationResults,
     output_dir: Path | str,
@@ -616,4 +718,3 @@ def visualize_evaluation_results(
         )
     
     logger.info(f"Visualizations saved to {output_dir}")
-

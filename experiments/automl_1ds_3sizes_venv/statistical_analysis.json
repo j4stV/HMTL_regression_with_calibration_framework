@@ -1,0 +1,160 @@
+{
+  "summary": {
+    "n_datasets": 1,
+    "n_data_points": 3,
+    "sizes_tested": [
+      0.3,
+      0.6,
+      1.0
+    ],
+    "baseline": "catboost",
+    "min_datasets_required": 3,
+    "min_size_points_required": 3,
+    "alpha": 0.05
+  },
+  "status": "insufficient_evidence",
+  "by_size": {
+    "0.3": {
+      "size_ratio": 0.3,
+      "n_datasets": 1,
+      "mean_delta_rmse": 0.12957890520898935,
+      "std_delta_rmse": 0.0,
+      "mean_delta_r_auc_mse": 0.021304942126931348,
+      "std_delta_r_auc_mse": 0.0,
+      "ttest_greater_rmse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "cohens_d_rmse": null,
+      "cohens_d_r_auc_mse": null,
+      "n_favor_hmtl_rmse": 1,
+      "n_favor_hmtl_r_auc_mse": 1
+    },
+    "0.6": {
+      "size_ratio": 0.6,
+      "n_datasets": 1,
+      "mean_delta_rmse": 0.05147734951974536,
+      "std_delta_rmse": 0.0,
+      "mean_delta_r_auc_mse": -0.02229197889832646,
+      "std_delta_r_auc_mse": 0.0,
+      "ttest_greater_rmse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 0.0,
+        "p_value": 1.0
+      },
+      "cohens_d_rmse": null,
+      "cohens_d_r_auc_mse": null,
+      "n_favor_hmtl_rmse": 1,
+      "n_favor_hmtl_r_auc_mse": 0
+    },
+    "1.0": {
+      "size_ratio": 1.0,
+      "n_datasets": 1,
+      "mean_delta_rmse": 0.07325048945590545,
+      "std_delta_rmse": 0.0,
+      "mean_delta_r_auc_mse": 0.02358045633704786,
+      "std_delta_r_auc_mse": 0.0,
+      "ttest_greater_rmse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "cohens_d_rmse": null,
+      "cohens_d_r_auc_mse": null,
+      "n_favor_hmtl_rmse": 1,
+      "n_favor_hmtl_r_auc_mse": 1
+    }
+  },
+  "slope_analysis": {
+    "delta_rmse": {
+      "stats": {
+        "n_datasets": 1,
+        "mean_slope": -0.07317716453982155,
+        "std_slope": 0.0,
+        "ttest_greater": {
+          "statistic": null,
+          "p_value": null
+        },
+        "wilcoxon_greater": {
+          "statistic": 0.0,
+          "p_value": 1.0
+        },
+        "insufficient": true
+      },
+      "per_dataset": [
+        {
+          "dataset_id": 41021,
+          "dataset_name": "Moneyball",
+          "metric": "delta_rmse",
+          "n_points": 3,
+          "slope": -0.07317716453982155,
+          "intercept": 0.13111445227010035
+        }
+      ]
+    },
+    "delta_r_auc_mse": {
+      "stats": {
+        "n_datasets": 1,
+        "mean_slope": 0.009273996937370172,
+        "std_slope": 0.0,
+        "ttest_greater": {
+          "statistic": null,
+          "p_value": null
+        },
+        "wilcoxon_greater": {
+          "statistic": 1.0,
+          "p_value": 0.5
+        },
+        "insufficient": true
+      },
+      "per_dataset": [
+        {
+          "dataset_id": 41021,
+          "dataset_name": "Moneyball",
+          "metric": "delta_r_auc_mse",
+          "n_points": 3,
+          "slope": 0.009273996937370172,
+          "intercept": 0.0016576084615498117
+        }
+      ]
+    }
+  },
+  "verdict": {
+    "delta_rmse": "insufficient_evidence",
+    "delta_r_auc_mse": "insufficient_evidence"
+  }
+}

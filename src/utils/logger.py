@@ -45,6 +45,9 @@ def setup_logging(log_dir: Path | str = "logs", log_level: int = logging.INFO) -
     # Create logger
     logger = logging.getLogger("hmtl")
     logger.setLevel(logging.DEBUG)
+    # Prevent messages from bubbling up to the root logger, which can cause
+    # duplicate/unformatted output if another module configures logging.
+    logger.propagate = False
     logger.handlers.clear()  # Remove any existing handlers
     
     # File handler (DEBUG level - detailed logs)

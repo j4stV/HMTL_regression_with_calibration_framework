@@ -38,6 +38,14 @@ experiments/      # Результаты экспериментов (plots, runs
 pip install -r requirements.txt
 ```
 
+### Проверка окружения перед экспериментами
+
+Перед запуском долгих экспериментов проверьте, что ключевые зависимости доступны:
+
+```bash
+python -c "import yaml, torch, sklearn, matplotlib, pytest; print('Environment check: OK')"
+```
+
 ## Быстрый старт
 
 ### Подготовка датасетов
@@ -89,6 +97,12 @@ python scripts/main.py
 
 ```bash
 python scripts/main.py --data configs/data_superconductor.yaml
+```
+
+Для классификации (Iris):
+
+```bash
+python scripts/main.py --data configs/data_iris.yaml
 ```
 
 ### Многократные запуски с разными сидами

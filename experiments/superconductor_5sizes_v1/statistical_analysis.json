@@ -1,0 +1,218 @@
+{
+  "summary": {
+    "n_datasets": 1,
+    "n_data_points": 5,
+    "sizes_tested": [
+      0.2,
+      0.4,
+      0.6,
+      0.8,
+      1.0
+    ],
+    "baseline": "catboost",
+    "min_datasets_required": 1,
+    "min_size_points_required": 3,
+    "alpha": 0.05
+  },
+  "status": "insufficient_evidence",
+  "by_size": {
+    "0.2": {
+      "size_ratio": 0.2,
+      "n_datasets": 1,
+      "mean_delta_rmse": 0.04089381545135318,
+      "std_delta_rmse": 0.0,
+      "mean_delta_r_auc_mse": -0.005907899912756608,
+      "std_delta_r_auc_mse": 0.0,
+      "ttest_greater_rmse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 0.0,
+        "p_value": 1.0
+      },
+      "cohens_d_rmse": null,
+      "cohens_d_r_auc_mse": null,
+      "n_favor_hmtl_rmse": 1,
+      "n_favor_hmtl_r_auc_mse": 0
+    },
+    "0.4": {
+      "size_ratio": 0.4,
+      "n_datasets": 1,
+      "mean_delta_rmse": 0.06814112920943072,
+      "std_delta_rmse": 0.0,
+      "mean_delta_r_auc_mse": 0.008978574605776897,
+      "std_delta_r_auc_mse": 0.0,
+      "ttest_greater_rmse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "cohens_d_rmse": null,
+      "cohens_d_r_auc_mse": null,
+      "n_favor_hmtl_rmse": 1,
+      "n_favor_hmtl_r_auc_mse": 1
+    },
+    "0.6": {
+      "size_ratio": 0.6,
+      "n_datasets": 1,
+      "mean_delta_rmse": 0.07555968832277624,
+      "std_delta_rmse": 0.0,
+      "mean_delta_r_auc_mse": 0.013322088552999411,
+      "std_delta_r_auc_mse": 0.0,
+      "ttest_greater_rmse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "cohens_d_rmse": null,
+      "cohens_d_r_auc_mse": null,
+      "n_favor_hmtl_rmse": 1,
+      "n_favor_hmtl_r_auc_mse": 1
+    },
+    "0.8": {
+      "size_ratio": 0.8,
+      "n_datasets": 1,
+      "mean_delta_rmse": 0.06757312641534,
+      "std_delta_rmse": 0.0,
+      "mean_delta_r_auc_mse": 0.01112358707994999,
+      "std_delta_r_auc_mse": 0.0,
+      "ttest_greater_rmse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "cohens_d_rmse": null,
+      "cohens_d_r_auc_mse": null,
+      "n_favor_hmtl_rmse": 1,
+      "n_favor_hmtl_r_auc_mse": 1
+    },
+    "1.0": {
+      "size_ratio": 1.0,
+      "n_datasets": 1,
+      "mean_delta_rmse": 0.09019509817673543,
+      "std_delta_rmse": 0.0,
+      "mean_delta_r_auc_mse": 0.01635782341069308,
+      "std_delta_r_auc_mse": 0.0,
+      "ttest_greater_rmse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 1.0,
+        "p_value": 0.5
+      },
+      "cohens_d_rmse": null,
+      "cohens_d_r_auc_mse": null,
+      "n_favor_hmtl_rmse": 1,
+      "n_favor_hmtl_r_auc_mse": 1
+    }
+  },
+  "slope_analysis": {
+    "delta_rmse": {
+      "stats": {
+        "n_datasets": 1,
+        "mean_slope": 0.049017281328336874,
+        "std_slope": 0.0,
+        "ttest_greater": {
+          "statistic": null,
+          "p_value": null
+        },
+        "wilcoxon_greater": {
+          "statistic": 1.0,
+          "p_value": 0.5
+        },
+        "insufficient": false
+      },
+      "per_dataset": [
+        {
+          "dataset_id": -1,
+          "dataset_name": "superconductor",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": 0.049017281328336874,
+          "intercept": 0.03906220271812497
+        }
+      ]
+    },
+    "delta_r_auc_mse": {
+      "stats": {
+        "n_datasets": 1,
+        "mean_slope": 0.02333822956053623,
+        "std_slope": 0.0,
+        "ttest_greater": {
+          "statistic": null,
+          "p_value": null
+        },
+        "wilcoxon_greater": {
+          "statistic": 1.0,
+          "p_value": 0.5
+        },
+        "insufficient": false
+      },
+      "per_dataset": [
+        {
+          "dataset_id": -1,
+          "dataset_name": "superconductor",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": 0.02333822956053623,
+          "intercept": -0.00522810298898919
+        }
+      ]
+    }
+  },
+  "verdict": {
+    "delta_rmse": "insufficient_evidence",
+    "delta_r_auc_mse": "insufficient_evidence"
+  }
+}

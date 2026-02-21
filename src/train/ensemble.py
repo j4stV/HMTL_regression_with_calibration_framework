@@ -6,7 +6,6 @@ from typing import List, Tuple
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
@@ -22,6 +21,7 @@ from src.utils.logger import get_logger, log_timing
 class EnsembleConfig:
     n_models: int = 5
     bagging: str = "stratified_kfold"  # "stratified_kfold", "stratified_bins", or "bootstrap"
+    show_progress: bool = True
 
 
 def stratified_bootstrap_indices(y_bins: np.ndarray, size: int, rng: np.random.RandomState) -> np.ndarray:
@@ -72,6 +72,8 @@ def fit_ensemble(
     n_bins: int,
     ens_cfg: EnsembleConfig,
     train_cfg: TrainConfig,
+    task_loss=None,  # NEW: Task-specific loss function
+    task_metrics=None,  # NEW: Task-specific metrics
     history_dir: Path | str | None = None,
 ) -> Tuple[List[HMTLModel], float]:
     logger = get_logger("ensemble")
@@ -100,7 +102,13 @@ def fit_ensemble(
             logger.info(f"Using StratifiedKFold with {ens_cfg.n_models} splits")
         
         # Progress bar for ensemble training
-        ensemble_pbar = tqdm(range(ens_cfg.n_models), desc="Ensemble Training", unit="model", leave=True)
+        ensemble_pbar = tqdm(
+            range(ens_cfg.n_models),
+            desc="Ensemble Training",
+            unit="model",
+            leave=True,
+            disable=not ens_cfg.show_progress,
+        )
         
         for i in ensemble_pbar:
             logger.info(f"Training model {i+1}/{ens_cfg.n_models}")
@@ -113,10 +121,14 @@ def fit_ensemble(
                 batch_size=train_cfg.batch_size,
                 patience=train_cfg.patience,
                 aux_weight=train_cfg.aux_weight,
+                sigma_reg_weight=train_cfg.sigma_reg_weight,
                 optimizer=train_cfg.optimizer,
                 lookahead_k=train_cfg.lookahead_k,
                 lookahead_alpha=train_cfg.lookahead_alpha,
+                weight_decay=train_cfg.weight_decay,
                 seed=model_seed,
+                task_type=train_cfg.task_type,
+                show_progress=train_cfg.show_progress,
             )
             
             # Sample indices based on bagging strategy
@@ -157,6 +169,8 @@ def fit_ensemble(
                 y_va_split,
                 n_bins=n_bins,
                 cfg=model_train_cfg,
+                task_loss=task_loss,  # NEW
+                task_metrics=task_metrics,  # NEW
                 history=history,
                 history_meta=history_meta,
             )
@@ -173,6 +187,8 @@ def fit_ensemble(
                     json.dump({"history": history, "meta": history_meta}, f, indent=2)
                 # Plot simple curves (loss / val metrics)
                 if history:
+                    import matplotlib.pyplot as plt
+
                     epochs = [h["epoch"] for h in history]
                     train_loss = [h.get("train_loss", np.nan) for h in history]
                     val_r = [h.get("val_r_auc_mse", np.nan) for h in history]
@@ -218,5 +234,3 @@ def fit_ensemble(
         logger.info(f"Ensemble statistics - Mean: {avg_score:.6f}, Std: {std_score:.6f}, Min: {min_score:.6f}, Max: {max_score:.6f}")
     
     return models, avg_score
-
-

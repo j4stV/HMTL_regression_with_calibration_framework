@@ -1,0 +1,34 @@
+# Base configuration for AutoML Benchmark experiments
+# This config can be used as a reference, but experiments use model_snn.yaml, train.yaml, ensemble.yaml
+
+# Note: The experiment script uses:
+# - configs/model_snn.yaml for model configuration
+# - configs/train.yaml for training configuration  
+# - configs/ensemble.yaml for ensemble configuration
+
+# Experiment parameters:
+experiment:
+  sizes: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+  seed: 42
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+  study_id: 269  # OpenML regression suite
+
+# Preprocessing (same as data.yaml but documented here for reference)
+preprocess:
+  impute_const: -1.0
+  use_dynamic_binning: true
+  quantile_binning_enabled: false
+  quantile_binning_bins: 5
+  standardize: true
+  pca_enabled: true
+  pca_n_components: null  # null = all components
+  target_standardize: true
+
+
+
+
+
+
+

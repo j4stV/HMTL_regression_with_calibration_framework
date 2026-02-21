@@ -1,0 +1,183 @@
+{
+  "dataset_id": -1,
+  "dataset_name": "superconductor",
+  "task_id": null,
+  "n_samples_total": 21263,
+  "n_samples_train": 17010,
+  "n_samples_valid": 2126,
+  "n_samples_test": 2127,
+  "target_column": "critical_temp",
+  "run_meta": {
+    "timestamp_utc": "2026-02-21T07:10:20.340386+00:00",
+    "seed_list": [
+      42
+    ],
+    "n_requested_seeds": 1,
+    "sizes": [
+      0.02
+    ],
+    "baselines": [
+      "single_mlp"
+    ],
+    "configs": {
+      "data": "configs/data_superconductor.yaml",
+      "model": "configs/model_snn.yaml",
+      "train": "configs/train.yaml",
+      "ensemble": "configs/ensemble.yaml"
+    },
+    "output_folder": "experiments/_debug_superconductor_sizes/dataset_local_superconductor"
+  },
+  "sizes": {
+    "2": {
+      "size_ratio": 0.02,
+      "n_train_samples": 340,
+      "per_seed": {
+        "42": {
+          "seed": 42,
+          "status": "ok",
+          "n_train_samples": 340,
+          "hmtl": {
+            "rmse": 0.4931621072220962,
+            "mse": 0.24320886399973832,
+            "mae": 0.379569033106758,
+            "r_auc_mse": 0.18326372054461074,
+            "mean_uncertainty": 0.7412117123603821,
+            "mean_epistemic": 0.2575242519378662,
+            "mean_aleatoric": 0.6928209066390991,
+            "ensemble_avg_val_r_auc_mse": 0.2557030662716202
+          },
+          "baselines": {
+            "single_mlp": {
+              "rmse": 0.4496032242999848,
+              "mse": 0.20214305930094245,
+              "mae": 0.3081647402396342,
+              "r_auc_mse": 0.0709197387424447,
+              "mean_uncertainty": 0.32307952642440796,
+              "mean_epistemic": 0.0,
+              "mean_aleatoric": 0.32307952642440796
+            }
+          },
+          "delta_vs_hmtl": {
+            "single_mlp": {
+              "delta_rmse": -0.04355888292211141,
+              "delta_r_auc_mse": -0.11234398180216604
+            }
+          }
+        }
+      },
+      "status": "ok",
+      "aggregate_over_seeds": {
+        "n_requested": 1,
+        "n_successful": 1,
+        "failed_seeds": [],
+        "hmtl": {
+          "ensemble_avg_val_r_auc_mse": {
+            "mean": 0.2557030662716202,
+            "std": 0.0
+          },
+          "mae": {
+            "mean": 0.379569033106758,
+            "std": 0.0
+          },
+          "mean_aleatoric": {
+            "mean": 0.6928209066390991,
+            "std": 0.0
+          },
+          "mean_epistemic": {
+            "mean": 0.2575242519378662,
+            "std": 0.0
+          },
+          "mean_uncertainty": {
+            "mean": 0.7412117123603821,
+            "std": 0.0
+          },
+          "mse": {
+            "mean": 0.24320886399973832,
+            "std": 0.0
+          },
+          "r_auc_mse": {
+            "mean": 0.18326372054461074,
+            "std": 0.0
+          },
+          "rmse": {
+            "mean": 0.4931621072220962,
+            "std": 0.0
+          }
+        },
+        "baselines": {
+          "single_mlp": {
+            "n_successful": 1,
+            "mae": {
+              "mean": 0.3081647402396342,
+              "std": 0.0
+            },
+            "mean_aleatoric": {
+              "mean": 0.32307952642440796,
+              "std": 0.0
+            },
+            "mean_epistemic": {
+              "mean": 0.0,
+              "std": 0.0
+            },
+            "mean_uncertainty": {
+              "mean": 0.32307952642440796,
+              "std": 0.0
+            },
+            "mse": {
+              "mean": 0.20214305930094245,
+              "std": 0.0
+            },
+            "r_auc_mse": {
+              "mean": 0.0709197387424447,
+              "std": 0.0
+            },
+            "rmse": {
+              "mean": 0.4496032242999848,
+              "std": 0.0
+            }
+          }
+        },
+        "delta_vs_hmtl": {
+          "single_mlp": {
+            "n_successful": 1,
+            "delta_r_auc_mse": {
+              "mean": -0.11234398180216604,
+              "std": 0.0
+            },
+            "delta_rmse": {
+              "mean": -0.04355888292211141,
+              "std": 0.0
+            }
+          }
+        }
+      },
+      "hmtl": {
+        "ensemble_avg_val_r_auc_mse": 0.2557030662716202,
+        "mae": 0.379569033106758,
+        "mean_aleatoric": 0.6928209066390991,
+        "mean_epistemic": 0.2575242519378662,
+        "mean_uncertainty": 0.7412117123603821,
+        "mse": 0.24320886399973832,
+        "r_auc_mse": 0.18326372054461074,
+        "rmse": 0.4931621072220962
+      },
+      "baselines": {
+        "single_mlp": {
+          "mae": 0.3081647402396342,
+          "mean_aleatoric": 0.32307952642440796,
+          "mean_epistemic": 0.0,
+          "mean_uncertainty": 0.32307952642440796,
+          "mse": 0.20214305930094245,
+          "r_auc_mse": 0.0709197387424447,
+          "rmse": 0.4496032242999848
+        }
+      },
+      "delta_vs_hmtl": {
+        "single_mlp": {
+          "delta_r_auc_mse": -0.11234398180216604,
+          "delta_rmse": -0.04355888292211141
+        }
+      }
+    }
+  }
+}

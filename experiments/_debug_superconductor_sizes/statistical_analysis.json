@@ -1,0 +1,102 @@
+{
+  "summary": {
+    "n_datasets": 1,
+    "n_data_points": 1,
+    "sizes_tested": [
+      0.02
+    ],
+    "baseline": "single_mlp",
+    "min_datasets_required": 1,
+    "min_size_points_required": 1,
+    "alpha": 0.05
+  },
+  "status": "insufficient_evidence",
+  "by_size": {
+    "0.02": {
+      "size_ratio": 0.02,
+      "n_datasets": 1,
+      "mean_delta_rmse": -0.04355888292211141,
+      "std_delta_rmse": 0.0,
+      "mean_delta_r_auc_mse": -0.11234398180216604,
+      "std_delta_r_auc_mse": 0.0,
+      "ttest_greater_rmse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 0.0,
+        "p_value": 1.0
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": null,
+        "p_value": null
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 0.0,
+        "p_value": 1.0
+      },
+      "cohens_d_rmse": null,
+      "cohens_d_r_auc_mse": null,
+      "n_favor_hmtl_rmse": 0,
+      "n_favor_hmtl_r_auc_mse": 0
+    }
+  },
+  "slope_analysis": {
+    "delta_rmse": {
+      "stats": {
+        "n_datasets": 1,
+        "mean_slope": -1.0889720730527848,
+        "std_slope": 0.0,
+        "ttest_greater": {
+          "statistic": null,
+          "p_value": null
+        },
+        "wilcoxon_greater": {
+          "statistic": 0.0,
+          "p_value": 1.0
+        },
+        "insufficient": false
+      },
+      "per_dataset": [
+        {
+          "dataset_id": -1,
+          "dataset_name": "superconductor",
+          "metric": "delta_rmse",
+          "n_points": 1,
+          "slope": -1.0889720730527848,
+          "intercept": -0.0217794414610557
+        }
+      ]
+    },
+    "delta_r_auc_mse": {
+      "stats": {
+        "n_datasets": 1,
+        "mean_slope": -2.8085995450541494,
+        "std_slope": 0.0,
+        "ttest_greater": {
+          "statistic": null,
+          "p_value": null
+        },
+        "wilcoxon_greater": {
+          "statistic": 0.0,
+          "p_value": 1.0
+        },
+        "insufficient": false
+      },
+      "per_dataset": [
+        {
+          "dataset_id": -1,
+          "dataset_name": "superconductor",
+          "metric": "delta_r_auc_mse",
+          "n_points": 1,
+          "slope": -2.8085995450541494,
+          "intercept": -0.05617199090108301
+        }
+      ]
+    }
+  },
+  "verdict": {
+    "delta_rmse": "insufficient_evidence",
+    "delta_r_auc_mse": "insufficient_evidence"
+  }
+}

@@ -1,0 +1,4 @@
+size_ratio,n_datasets,mean_delta_rmse,std_delta_rmse,p_ttest_greater_rmse,p_wilcoxon_greater_rmse,mean_delta_r_auc_mse,std_delta_r_auc_mse,p_ttest_greater_r_auc_mse,p_wilcoxon_greater_r_auc_mse
+0.3,1,0.12957890520898935,0.0,,0.5,0.021304942126931348,0.0,,0.5
+0.6,1,0.05147734951974536,0.0,,0.5,-0.02229197889832646,0.0,,1.0
+1.0,1,0.07325048945590545,0.0,,0.5,0.02358045633704786,0.0,,0.5

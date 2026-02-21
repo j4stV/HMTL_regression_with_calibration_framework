@@ -14,6 +14,19 @@ from src.models.hmtl import HMTLModel
 from src.utils.logger import get_logger
 
 
+def _is_mps_available() -> bool:
+    mps_backend = getattr(torch.backends, "mps", None)
+    return bool(mps_backend is not None and mps_backend.is_available())
+
+
+def _select_default_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if _is_mps_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 @dataclass
 class EvaluationResults:
     """Complete evaluation results."""
@@ -67,7 +80,7 @@ def evaluate_on_dataset(
     logger = get_logger("eval.evaluator")
     
     if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = _select_default_device()
     
     logger.info(f"Evaluating on {len(X)} samples with {len(models)} models")
     
@@ -203,3 +216,116 @@ def evaluate_on_dataset(
         residuals=y_true - y_pred,
     )
 
+"""Classification evaluation function to append to evaluator.py"""
+
+
+def evaluate_classification_on_dataset(
+    models: List[HMTLModel],
+    X: np.ndarray,
+    y_true: np.ndarray,
+    X_cal: np.ndarray | None = None,
+    y_cal: np.ndarray | None = None,
+    coverage_levels: list[float] = [0.80, 0.90, 0.95],
+    device: torch.device | None = None,
+) -> dict:
+    """Comprehensive evaluation for classification.
+
+    Args:
+        models: List of trained models
+        X: Features
+        y_true: True class labels (n_samples,)
+        X_cal: Calibration features (optional)
+        y_cal: Calibration labels (optional)
+        coverage_levels: Desired coverage levels for conformal sets
+        device: Device for inference
+
+    Returns:
+        Dictionary with evaluation results:
+        - metrics: classification metrics dict
+        - conformal_results: conformal sets for each coverage level
+        - predictions: logits_mean, probs_mean
+        - uncertainty: total, epistemic, aleatoric
+    """
+    logger = get_logger("eval.evaluator")
+
+    if device is None:
+        device = _select_default_device()
+
+    logger.info(f"Evaluating classification on {len(X)} samples with {len(models)} models")
+
+    # Get ensemble predictions with uncertainty
+    from src.eval.ensemble import ensemble_predict_classification
+
+    logits_mean, probs_mean, uncertainty_total, uncertainty_epistemic, uncertainty_aleatoric = \
+        ensemble_predict_classification(models, X, device=device)
+
+    # Compute classification metrics
+    from src.eval.classification_metrics import compute_classification_metrics
+
+    metrics = compute_classification_metrics(
+        y_true=y_true,
+        logits=logits_mean,
+        probs=probs_mean,
+        uncertainty=uncertainty_total,
+        num_classes=probs_mean.shape[-1],
+    )
+
+    logger.info(
+        f"Classification metrics - "
+        f"Accuracy: {metrics['accuracy']:.4f}, "
+        f"ECE: {metrics['ece']:.4f}, "
+        f"Brier: {metrics['brier']:.4f}"
+    )
+
+    # Conformal prediction sets
+    conformal_results = {}
+    if X_cal is not None and y_cal is not None:
+        logger.info("Performing conformal calibration for classification")
+
+        # Get predictions on calibration set
+        _, probs_cal, _, _, _ = ensemble_predict_classification(models, X_cal, device=device)
+
+        # Calibrate for multiple coverage levels
+        from src.eval.conformal import (
+            split_conformal_classification,
+            apply_conformal_sets,
+            coverage_classification,
+        )
+
+        for coverage_level in coverage_levels:
+            alpha = 1.0 - coverage_level
+            q = split_conformal_classification(y_cal, probs_cal, alpha=alpha)
+
+            # Apply to test set
+            prediction_sets_test = apply_conformal_sets(probs_mean, q)
+            cov = coverage_classification(y_true, prediction_sets_test)
+            mean_set_size = np.mean([len(s) for s in prediction_sets_test])
+
+            conformal_results[coverage_level] = {
+                "quantile": q,
+                "coverage": cov,
+                "mean_set_size": mean_set_size,
+                "prediction_sets": prediction_sets_test,
+            }
+
+            logger.info(
+                f"Coverage {coverage_level:.0%}: quantile={q:.6f}, "
+                f"actual_coverage={cov:.4%}, mean_set_size={mean_set_size:.2f}"
+            )
+    else:
+        logger.warning("No calibration set provided, skipping conformal calibration")
+
+    return {
+        "metrics": metrics,
+        "conformal_results": conformal_results,
+        "predictions": {
+            "logits_mean": logits_mean,
+            "probs_mean": probs_mean,
+        },
+        "uncertainty": {
+            "total": uncertainty_total,
+            "epistemic": uncertainty_epistemic,
+            "aleatoric": uncertainty_aleatoric,
+        },
+        "y_true": y_true,
+    }

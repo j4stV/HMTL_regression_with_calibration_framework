@@ -1,0 +1,31 @@
+# Classification Task Configuration Template
+# Copy and modify this file for specific classification datasets
+
+task:
+  type: classification  # Task type: "regression" or "classification"
+  num_classes: 3  # Number of classes (REQUIRED for classification)
+  class_weights: null  # Optional: [0.1, 0.2, 0.7] for imbalanced classes
+  temperature_scaling: true  # Enable learnable temperature for calibration
+  use_focal_loss: false  # Use focal loss instead of cross-entropy
+  focal_alpha: 0.25  # Focal loss alpha (weight for class balance)
+  focal_gamma: 2.0  # Focal loss gamma (focusing parameter)
+  label_smoothing: 0.0  # Label smoothing (0.0 = no smoothing, 0.1 = 10% smoothing)
+
+paths:
+  train_csv: data/classification_train.csv
+  valid_csv: data/classification_valid.csv
+  cal_csv: null  # Optional: separate calibration set (if null, uses validation set)
+  test_csv: data/classification_test.csv
+  target: label  # Target column name (should contain class indices 0, 1, 2, ...)
+
+preprocess:
+  impute_const: -1.0  # Value for imputing missing features
+  use_dynamic_binning: true  # Dynamic binning for auxiliary task
+  quantile_binning:
+    enabled: false  # Deprecated
+    bins: 5
+  standardize: true  # Standardize features (zero-mean, unit-variance)
+  pca:
+    enabled: true  # Enable PCA dimensionality reduction
+    n_components: null  # null = all components, float = variance ratio, int = n components
+  target_standardize: false  # MUST be false for classification!

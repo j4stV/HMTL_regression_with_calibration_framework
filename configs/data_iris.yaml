@@ -1,0 +1,28 @@
+task:
+  type: classification
+  num_classes: 3
+  class_weights: null
+  temperature_scaling: true
+  use_focal_loss: false
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  label_smoothing: 0.0
+
+paths:
+  train_csv: data/iris/train.csv
+  valid_csv: data/iris/valid.csv
+  cal_csv: null
+  test_csv: data/iris/test.csv
+  target: class
+
+preprocess:
+  impute_const: -1.0
+  use_dynamic_binning: true
+  quantile_binning:
+    enabled: false
+    bins: 5
+  standardize: true
+  pca:
+    enabled: false
+    n_components: null
+  target_standardize: false

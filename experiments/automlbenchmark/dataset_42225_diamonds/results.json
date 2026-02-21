@@ -1,0 +1,42 @@
+{
+  "dataset_id": 42225,
+  "dataset_name": "diamonds",
+  "n_samples_total": 53940,
+  "n_samples_train": 43152,
+  "n_samples_valid": 5394,
+  "n_samples_test": 5394,
+  "input_dim": 9,
+  "target_column": "price",
+  "sizes": {
+    "10": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "20": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "30": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "40": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "50": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "60": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "70": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "80": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "90": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "100": {
+      "error": "name 'scale_coeff' is not defined"
+    }
+  }
+}

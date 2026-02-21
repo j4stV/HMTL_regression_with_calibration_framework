@@ -13,4 +13,5 @@ einops>=0.8
 tqdm>=4.66
 colorlog>=6.8
 pytest>=7.4
+openml>=0.15
 

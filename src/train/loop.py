@@ -23,12 +23,27 @@ class TrainConfig:
     batch_size: int = 256
     patience: int = 20
     aux_weight: float = 0.5  # Default 0.5  (loss_weights for projection)
-    sigma_reg_weight: float = 0.0  # Disabled by default 
+    sigma_reg_weight: float = 0.0  # Disabled by default (regression only)
     optimizer: str = "radam_lookahead"  # "radam_lookahead" or "adamw"
     lookahead_k: int = 6
     lookahead_alpha: float = 0.5
     weight_decay: float = 0.0
     seed: int | None = None
+    task_type: str = "regression"  # NEW: "regression" or "classification"
+    show_progress: bool = True
+
+
+def _is_mps_available() -> bool:
+    mps_backend = getattr(torch.backends, "mps", None)
+    return bool(mps_backend is not None and mps_backend.is_available())
+
+
+def _select_default_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if _is_mps_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 def compute_bins(y: np.ndarray, n_bins: int, use_rounding: bool = False) -> np.ndarray:
@@ -84,6 +99,8 @@ def train_model(
     y_va: np.ndarray,
     n_bins: int,
     cfg: TrainConfig,
+    task_loss = None,  # NEW: Optional task-specific loss function
+    task_metrics = None,  # NEW: Optional task-specific metrics
     history: list[dict] | None = None,
     history_meta: dict | None = None,
 ) -> float:
@@ -97,23 +114,30 @@ def train_model(
             torch.cuda.manual_seed_all(cfg.seed)
         logger.info(f"Set random seed to {cfg.seed}")
     
-    # Check CUDA availability with detailed diagnostics
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
+    # Select execution device with fallback: CUDA -> MPS -> CPU.
+    device = _select_default_device()
+    if device.type == "cuda":
         logger.info(f"Using device: {device}")
         logger.info(f"  CUDA version: {torch.version.cuda}")
         logger.info(f"  GPU count: {torch.cuda.device_count()}")
         logger.info(f"  GPU name: {torch.cuda.get_device_name(0)}")
+    elif device.type == "mps":
+        logger.info(f"Using device: {device}")
+        mps_backend = getattr(torch.backends, "mps", None)
+        if mps_backend is not None and hasattr(mps_backend, "is_built"):
+            logger.info(f"  MPS backend built: {mps_backend.is_built()}")
+        logger.info(f"  PyTorch version: {torch.__version__}")
     else:
-        device = torch.device("cpu")
         logger.warning(f"Using device: {device}")
-        logger.warning("  CUDA is not available. Possible reasons:")
-        logger.warning("    1. No GPU detected on this system")
-        logger.warning("    2. PyTorch was installed without CUDA support (CPU-only version)")
-        logger.warning("    3. CUDA drivers are not properly installed")
-        logger.warning("    4. CUDA version mismatch between PyTorch and system")
+        logger.warning("  CUDA and MPS are unavailable. Possible reasons:")
+        logger.warning("    1. No compatible GPU detected on this system")
+        logger.warning("    2. PyTorch was installed without GPU backend support")
+        logger.warning("    3. GPU drivers/runtime are not properly configured")
         logger.warning(f"  PyTorch version: {torch.__version__}")
         logger.warning(f"  CUDA available in PyTorch build: {torch.version.cuda is not None}")
+        mps_backend = getattr(torch.backends, "mps", None)
+        if mps_backend is not None and hasattr(mps_backend, "is_built"):
+            logger.warning(f"  MPS available in PyTorch build: {mps_backend.is_built()}")
     model.to(device)
 
     logger.debug(f"Training data shape: {X_tr.shape}, Validation data shape: {X_va.shape}")
@@ -122,16 +146,32 @@ def train_model(
     # Determine if we should use rounding approach (for contrastive learning)
     aux_task = getattr(model, "aux_task", "bins")
     use_rounding = (aux_task == "contrastive")
-    y_bins_tr = compute_bins(y_tr, n_bins, use_rounding=use_rounding)
-    train_ds = TensorDataset(
-        torch.tensor(X_tr, dtype=torch.float32),
-        torch.tensor(y_tr.reshape(-1, 1), dtype=torch.float32),
-        torch.tensor(y_bins_tr, dtype=torch.long),
-    )
-    val_ds = TensorDataset(
-        torch.tensor(X_va, dtype=torch.float32),
-        torch.tensor(y_va.reshape(-1, 1), dtype=torch.float32),
-    )
+
+    # Prepare datasets based on task type
+    if cfg.task_type == "regression":
+        y_bins_tr = compute_bins(y_tr, n_bins, use_rounding=use_rounding)
+        train_ds = TensorDataset(
+            torch.tensor(X_tr, dtype=torch.float32),
+            torch.tensor(y_tr.reshape(-1, 1), dtype=torch.float32),
+            torch.tensor(y_bins_tr, dtype=torch.long),
+        )
+        val_ds = TensorDataset(
+            torch.tensor(X_va, dtype=torch.float32),
+            torch.tensor(y_va.reshape(-1, 1), dtype=torch.float32),
+        )
+    else:  # classification
+        # For classification, targets are already class indices
+        y_bins_tr = y_tr.astype(np.int64)  # Use class labels directly for aux task
+        train_ds = TensorDataset(
+            torch.tensor(X_tr, dtype=torch.float32),
+            torch.tensor(y_tr, dtype=torch.long),  # Class indices
+            torch.tensor(y_bins_tr, dtype=torch.long),  # Same as y_tr for classification
+        )
+        val_ds = TensorDataset(
+            torch.tensor(X_va, dtype=torch.float32),
+            torch.tensor(y_va, dtype=torch.long),  # Class indices
+        )
+
     train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False)
 
@@ -161,7 +201,13 @@ def train_model(
     aux_task = getattr(model, "aux_task", "bins")
     
     # Epoch loop with progress bar
-    epoch_pbar = tqdm(range(cfg.epochs), desc="Training", unit="epoch", leave=True)
+    epoch_pbar = tqdm(
+        range(cfg.epochs),
+        desc="Training",
+        unit="epoch",
+        leave=True,
+        disable=not cfg.show_progress,
+    )
     early_stop_epoch = None
     for epoch in epoch_pbar:
         model.train()
@@ -169,30 +215,62 @@ def train_model(
         num_batches = 0
         
         # Batch loop with nested progress bar
-        batch_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.epochs}", leave=False, unit="batch")
+        batch_pbar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch+1}/{cfg.epochs}",
+            leave=False,
+            unit="batch",
+            disable=not cfg.show_progress,
+        )
         for xb, yb, yb_bin in batch_pbar:
             xb = xb.to(device)
             yb = yb.to(device)
             yb_bin = yb_bin.to(device)
-            
+
             output = model(xb)
-            
-            # Handle different model types
-            if len(output) == 2:
-                # Single MLP or models without aux task
-                mu, sigma = output
-                loss = gaussian_nll(mu, sigma, yb, sigma_reg_weight=cfg.sigma_reg_weight)
-            else:
-                # HMTL models with aux task
-                mu, sigma, aux_output = output
-                loss = gaussian_nll(mu, sigma, yb, sigma_reg_weight=cfg.sigma_reg_weight)
-                
-                if aux_output is not None:
+
+            # Compute task loss based on task type
+            if cfg.task_type == "regression":
+                # Regression: use gaussian_nll
+                if len(output) == 2:
+                    # Single MLP or models without aux task
+                    mu, sigma = output
+                    loss = gaussian_nll(mu, sigma, yb, sigma_reg_weight=cfg.sigma_reg_weight)
+                else:
+                    # HMTL models with aux task
+                    mu, sigma, aux_output = output
+                    loss = gaussian_nll(mu, sigma, yb, sigma_reg_weight=cfg.sigma_reg_weight)
+
+                    if aux_output is not None:
+                        if aux_task == "bins":
+                            # Classification head
+                            loss = loss + cfg.aux_weight * ce(aux_output, yb_bin)
+                        elif aux_task == "contrastive":
+                            # Contrastive learning (temperature=0.5)
+                            aux_loss = n_pairs_loss(aux_output, yb_bin, temperature=0.5)
+                            loss = loss + cfg.aux_weight * aux_loss
+
+            else:  # classification
+                # Classification: use task_loss or cross-entropy
+                if len(output) == 2:
+                    # Model without aux task
+                    logits = output[0]
+                else:
+                    # Model with aux task
+                    logits, _, aux_output = output
+
+                if task_loss is not None:
+                    loss = task_loss(logits, yb)
+                else:
+                    # Fallback to cross-entropy
+                    loss = ce(logits, yb)
+
+                # Add auxiliary loss if available
+                if len(output) == 3 and output[2] is not None:
+                    aux_output = output[2]
                     if aux_task == "bins":
-                        # Classification head
                         loss = loss + cfg.aux_weight * ce(aux_output, yb_bin)
                     elif aux_task == "contrastive":
-                        # Contrastive learning (temperature=0.5 )
                         aux_loss = n_pairs_loss(aux_output, yb_bin, temperature=0.5)
                         loss = loss + cfg.aux_weight * aux_loss
             
@@ -210,27 +288,59 @@ def train_model(
         # Validation
         model.eval()
         with torch.no_grad():
-            preds = []
-            sigmas = []
-            gts = []
-            for xb, yb in val_loader:
-                xb = xb.to(device)
-                output = model(xb)
-                # Handle different model types
-                if len(output) == 2:
-                    mu, sigma = output
-                else:
-                    mu, sigma, _ = output
-                preds.append(mu.cpu().numpy().ravel())
-                sigmas.append(sigma.cpu().numpy().ravel())
-                gts.append(yb.numpy().ravel())
-            y_pred = np.concatenate(preds)
-            y_sigma = np.concatenate(sigmas)
-            y_true = np.concatenate(gts)
-            mse = float(np.mean((y_true - y_pred) ** 2))
-            rmse = float(np.sqrt(mse))
-            mae = float(np.mean(np.abs(y_true - y_pred)))
-            score = r_auc_mse((y_true - y_pred) ** 2, y_sigma)
+            if cfg.task_type == "regression":
+                # Regression validation
+                preds = []
+                sigmas = []
+                gts = []
+                for xb, yb in val_loader:
+                    xb = xb.to(device)
+                    output = model(xb)
+                    # Handle different model types
+                    if len(output) == 2:
+                        mu, sigma = output
+                    else:
+                        mu, sigma, _ = output
+                    preds.append(mu.cpu().numpy().ravel())
+                    sigmas.append(sigma.cpu().numpy().ravel())
+                    gts.append(yb.numpy().ravel())
+                y_pred = np.concatenate(preds)
+                y_sigma = np.concatenate(sigmas)
+                y_true = np.concatenate(gts)
+                mse = float(np.mean((y_true - y_pred) ** 2))
+                rmse = float(np.sqrt(mse))
+                mae = float(np.mean(np.abs(y_true - y_pred)))
+                score = r_auc_mse((y_true - y_pred) ** 2, y_sigma)
+
+            else:  # classification
+                # Classification validation
+                logits_list = []
+                gts = []
+                for xb, yb in val_loader:
+                    xb = xb.to(device)
+                    output = model(xb)
+                    if len(output) == 2:
+                        logits = output[0]
+                    else:
+                        logits = output[0]
+                    logits_list.append(logits.cpu().numpy())
+                    gts.append(yb.numpy())
+
+                logits_val = np.concatenate(logits_list)
+                y_true = np.concatenate(gts)
+
+                # Compute softmax probabilities
+                from src.eval.ensemble import softmax
+                probs_val = softmax(logits_val, axis=-1)
+                y_pred = np.argmax(probs_val, axis=-1)
+
+                # Compute metrics
+                accuracy = float(np.mean(y_pred == y_true))
+                # Use negative log-likelihood as validation score (lower is better)
+                nll = float(np.mean(-np.log(probs_val[np.arange(len(y_true)), y_true.astype(int)] + 1e-10)))
+                score = nll
+                rmse = 0.0  # Not applicable for classification
+                mae = 0.0  # Not applicable for classification
 
         # Update progress bar with metrics
         epoch_pbar.set_postfix({
@@ -256,17 +366,24 @@ def train_model(
                 break
         
         if history is not None:
-            history.append({
-                "epoch": epoch,
-                "train_loss": float(avg_train_loss),
-                "val_r_auc_mse": float(score),
-                "val_rmse": float(rmse),
-                "val_mae": float(mae),
-            })
+            if cfg.task_type == "regression":
+                history.append({
+                    "epoch": epoch,
+                    "train_loss": float(avg_train_loss),
+                    "val_r_auc_mse": float(score),
+                    "val_rmse": float(rmse),
+                    "val_mae": float(mae),
+                })
+            else:  # classification
+                history.append({
+                    "epoch": epoch,
+                    "train_loss": float(avg_train_loss),
+                    "val_nll": float(score),
+                    "val_accuracy": float(accuracy),
+                })
     
     if history_meta is not None:
         history_meta["best_epoch"] = best_epoch
         history_meta["early_stop_epoch"] = early_stop_epoch
     logger.info(f"Training completed. Best validation score: {best:.6f}")
     return best
-

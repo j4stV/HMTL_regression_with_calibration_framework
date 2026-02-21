@@ -1,0 +1,54 @@
+[
+  {
+    "dataset_id": 41021,
+    "dataset_name": "dataset_41021",
+    "n_samples_total": 1232,
+    "n_samples_train": 984,
+    "n_samples_valid": 124,
+    "n_samples_test": 124,
+    "input_dim": 14,
+    "target_column": "RS",
+    "sizes": {
+      "30": {
+        "size_ratio": 0.3,
+        "n_train_samples": 295,
+        "hmtl": {
+          "rmse": 0.4075011203729474,
+          "mse": 0.16605716310520738,
+          "mae": 0.301374037977289,
+          "r_auc_mse": 0.14609966590850887,
+          "mean_uncertainty": 0.730239748954773
+        },
+        "catboost": {
+          "rmse": 0.48942939292829435,
+          "mse": 0.23954113066215874,
+          "mae": 0.37054231335753884,
+          "r_auc_mse": 0.1175993366366805,
+          "mean_uncertainty": 0.24238436025049317
+        },
+        "delta_rmse": 0.08192827255534696,
+        "delta_r_auc_mse": -0.02850032927182837
+      },
+      "100": {
+        "size_ratio": 1.0,
+        "n_train_samples": 984,
+        "hmtl": {
+          "rmse": 0.35978651760313035,
+          "mse": 0.12944633824898763,
+          "mae": 0.26955335346175824,
+          "r_auc_mse": 0.09082848790587472,
+          "mean_uncertainty": 0.7315775752067566
+        },
+        "catboost": {
+          "rmse": 0.39742113318951733,
+          "mse": 0.1579435571056401,
+          "mae": 0.297957820420729,
+          "r_auc_mse": 0.08670552515110146,
+          "mean_uncertainty": 0.17345357155214777
+        },
+        "delta_rmse": 0.03763461558638698,
+        "delta_r_auc_mse": -0.004122962754773266
+      }
+    }
+  }
+]

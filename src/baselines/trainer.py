@@ -138,7 +138,6 @@ def train_hmtl_baseline(
             aux_weight=aux_weight,
             enable_aux=True,
             aux_task="bins",
-            sigma_max=sigma_max,
         )
     
     models, avg_score = fit_ensemble(

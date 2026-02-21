@@ -1,0 +1,42 @@
+{
+  "dataset_id": 41021,
+  "dataset_name": "Moneyball",
+  "n_samples_total": 1232,
+  "n_samples_train": 984,
+  "n_samples_valid": 124,
+  "n_samples_test": 124,
+  "input_dim": 14,
+  "target_column": "RS",
+  "sizes": {
+    "10": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "20": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "30": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "40": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "50": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "60": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "70": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "80": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "90": {
+      "error": "name 'scale_coeff' is not defined"
+    },
+    "100": {
+      "error": "name 'scale_coeff' is not defined"
+    }
+  }
+}

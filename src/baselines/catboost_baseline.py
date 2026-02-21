@@ -102,12 +102,18 @@ class CatBoostBaseline:
         all_data = []
         
         for model in self.models:
+            # `virtual_ensembles_predict` requires enough trained trees.
+            # With early stopping, tree count can be lower than requested
+            # virtual ensembles count, so cap it per model.
+            tree_count = int(getattr(model, "tree_count_", 0) or 0)
+            virtual_ensembles_count = max(1, min(self.n_models, tree_count)) if tree_count > 0 else 1
+
             # Use virtual_ensembles_predict with TotalUncertainty
             # Returns [mean, knowledge_uncertainty, data_uncertainty] for each sample
             preds = model.virtual_ensembles_predict(
                 X_df,
                 prediction_type='TotalUncertainty',
-                virtual_ensembles_count=self.n_models,
+                virtual_ensembles_count=virtual_ensembles_count,
             )
             
             

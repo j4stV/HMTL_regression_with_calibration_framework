@@ -30,8 +30,9 @@ class HMTLModel(nn.Module):
         aux_weight: float,
         enable_aux: bool = True,
         aux_task: str = "contrastive",  # "bins" or "contrastive" (default: contrastive )
-        proj_dim: int = 50,  # Default 50 
-        scale_coeff: float = 1.0,  # Target std for sigma scaling 
+        proj_dim: int = 50,  # Default 50
+        scale_coeff: float = 1.0,  # Target std for sigma scaling
+        task_head: nn.Module | None = None,  # NEW: Injectable task head for multi-task support
     ) -> None:
         super().__init__()
         self.enable_aux = enable_aux
@@ -42,8 +43,15 @@ class HMTLModel(nn.Module):
         self.encoder_low = SNNEncoder(input_dim, hidden_width, depth_low, alpha_dropout)
         # High-level encoder: remaining layers (e.g., 6 layers)
         self.encoder_high = SNNEncoder(self.encoder_low.output_dim, hidden_width, depth_high - depth_low, alpha_dropout)
-        # Regression head with scale_coeff 
-        self.reg_head = RegressionHead(self.encoder_high.output_dim, scale_coeff=scale_coeff)
+
+        # Task head: injected for flexibility, defaults to RegressionHead for backward compatibility
+        if task_head is None:
+            self.task_head = RegressionHead(self.encoder_high.output_dim, scale_coeff=scale_coeff)
+        else:
+            self.task_head = task_head
+
+        # Maintain backward compatibility: keep reg_head attribute
+        self.reg_head = self.task_head if isinstance(self.task_head, RegressionHead) else None
         
         if enable_aux:
             if aux_task == "bins":
@@ -58,21 +66,35 @@ class HMTLModel(nn.Module):
             self.aux_head = None
             self.proj_head = None
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, ...]:
         h_low = self.encoder_low(x)
         h_high = self.encoder_high(h_low)
-        mu, sigma = self.reg_head(h_high)
-        
+
+        # Use task_head (which may be RegressionHead or ClassificationHead)
+        task_output = self.task_head(h_high)
+
+        # Handle task output - maintain backward compatibility with (mu, sigma) naming
+        # For regression: task_output = (mu, sigma)
+        # For classification: task_output = logits (single tensor)
+        if isinstance(task_output, tuple):
+            # Regression case: (mu, sigma)
+            output1, output2 = task_output
+        else:
+            # Classification case: logits
+            # Return as tuple for consistency: (logits, None)
+            output1, output2 = task_output, None
+
+        # Auxiliary task output
         if self.enable_aux:
             if self.aux_task == "bins" and self.aux_head is not None:
-                logits = self.aux_head(h_low)
-                return mu, sigma, logits
+                aux_logits = self.aux_head(h_low)
+                return output1, output2, aux_logits
             elif self.aux_task == "contrastive" and self.proj_head is not None:
                 projection = self.proj_head(h_low)
-                return mu, sigma, projection
+                return output1, output2, projection
             else:
-                return mu, sigma, None
+                return output1, output2, None
         else:
-            return mu, sigma, None
+            return output1, output2, None
 
 

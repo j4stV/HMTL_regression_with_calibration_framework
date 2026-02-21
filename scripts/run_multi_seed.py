@@ -15,7 +15,7 @@ import seaborn as sns
 
 from scripts.main import run_experiment, load_yaml
 from src.eval.metrics import EvaluationMetrics, aggregate_metrics_across_seeds
-from src.utils.logger import setup_logging, get_logger, log_metrics, log_timing
+from src.utils.logger import setup_logging, get_logger, log_timing
 
 # Set style for plots
 sns.set_style("whitegrid")
@@ -64,6 +64,8 @@ def run_multi_seed_experiment(
     # Run experiments for each seed
     all_metrics_list: list[EvaluationMetrics] = []
     all_results = []
+    successful_seeds: list[int] = []
+    failed_seeds: list[dict[str, str | int]] = []
     
     for i, seed in enumerate(seeds):
         logger.info("=" * 80)
@@ -92,6 +94,7 @@ def run_multi_seed_experiment(
             # Extract metrics
             metrics = result["val_results"].metrics
             all_metrics_list.append(metrics)
+            successful_seeds.append(seed)
             all_results.append({
                 "seed": seed,
                 "metrics": {
@@ -119,6 +122,10 @@ def run_multi_seed_experiment(
         except Exception as e:
             logger.error(f"Failed to run experiment with seed {seed}: {e}")
             logger.exception(e)
+            failed_seeds.append({
+                "seed": seed,
+                "error": str(e),
+            })
         finally:
             # Clean up temp config
             if temp_config_path.exists():
@@ -137,13 +144,20 @@ def run_multi_seed_experiment(
     
     # Log aggregated metrics
     logger.info("Aggregated Metrics (mean ± std):")
+    logger.info(f"Successful seeds: {successful_seeds} ({len(successful_seeds)}/{len(seeds)})")
+    if failed_seeds:
+        logger.warning(f"Failed seeds: {[item['seed'] for item in failed_seeds]}")
     for metric_name, (mean_val, std_val) in aggregated.items():
         logger.info(f"  {metric_name}: {mean_val:.6f} ± {std_val:.6f}")
     
     # Save results to JSON
     results_summary = {
-        "seeds": seeds,
-        "n_seeds": len(seeds),
+        "seeds": successful_seeds,
+        "seeds_requested": seeds,
+        "n_seeds": len(successful_seeds),  # Backward-compat alias: successful runs
+        "n_requested": len(seeds),
+        "n_successful": len(successful_seeds),
+        "failed_seeds": failed_seeds,
         "aggregated_metrics": {k: {"mean": float(v[0]), "std": float(v[1])} for k, v in aggregated.items()},
         "individual_results": all_results,
     }
@@ -267,7 +281,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="configs/model_snn.yaml", help="Path to model config")
     parser.add_argument("--train", default="configs/train.yaml", help="Path to train config")
     parser.add_argument("--ensemble", default="configs/ensemble.yaml", help="Path to ensemble config")
-    parser.add_argument("--n_seeds", type=int, default=3, help="Number of seeds")
+    parser.add_argument("--n_seeds", "--n-seeds", dest="n_seeds", type=int, default=3, help="Number of seeds")
     parser.add_argument("--seeds", type=int, nargs="+", help="Specific seeds to use")
     parser.add_argument("--output", default="experiments/multi_seed", help="Output directory for results")
     args = parser.parse_args()
