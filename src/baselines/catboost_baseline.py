@@ -72,6 +72,7 @@ class CatBoostBaseline:
         self.logger.info(f"Training CatBoost ensemble with {self.n_models} models")
         
         self.models = []
+        self._resolved_task_type = None
         for i in range(self.n_models):
             # Convert to DataFrame for CatBoost
             X_df = pd.DataFrame(X, columns=[f"feature_{j}" for j in range(X.shape[1])])
