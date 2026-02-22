@@ -166,6 +166,8 @@ def train_catboost_baseline(
     learning_rate: float = 0.1,
     depth: int = 6,
     random_seed: int = 42,
+    compute_device: str = "auto",
+    gpu_devices: str | None = None,
 ) -> CatBoostBaseline:
     """Train CatBoost baseline."""
     logger = get_logger("baselines.trainer")
@@ -176,6 +178,8 @@ def train_catboost_baseline(
         learning_rate=learning_rate,
         depth=depth,
         random_seed=random_seed,
+        compute_device=compute_device,
+        gpu_devices=gpu_devices,
     )
     
     baseline.fit(X_tr, y_tr, X_val=X_va, y_val=y_va)

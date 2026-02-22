@@ -6,10 +6,12 @@ import numpy as np
 import pandas as pd
 
 try:
-    from catboost import CatBoostRegressor
+    from catboost import CatBoostError, CatBoostRegressor
     HAS_CATBOOST = True
 except ImportError:
     HAS_CATBOOST = False
+    CatBoostRegressor = None  # type: ignore[assignment]
+    CatBoostError = Exception
 
 from src.utils.logger import get_logger
 
@@ -24,17 +26,46 @@ class CatBoostBaseline:
         learning_rate: float = 0.1,
         depth: int = 6,
         random_seed: int = 42,
+        compute_device: str = "auto",
+        gpu_devices: str | None = None,
     ) -> None:
         if not HAS_CATBOOST:
             raise ImportError("CatBoost is not installed. Install with: pip install catboost")
+        if compute_device not in {"auto", "cpu", "gpu"}:
+            raise ValueError("compute_device must be one of: 'auto', 'cpu', 'gpu'")
         
         self.n_models = n_models
         self.iterations = iterations
         self.learning_rate = learning_rate
         self.depth = depth
         self.random_seed = random_seed
+        self.compute_device = compute_device
+        self.gpu_devices = gpu_devices
         self.models = []
         self.logger = get_logger("baselines.catboost")
+        self._resolved_task_type: str | None = None
+
+    def _candidate_task_types(self) -> list[str]:
+        if self.compute_device == "gpu":
+            return ["GPU"]
+        if self.compute_device == "cpu":
+            return ["CPU"]
+        return ["GPU", "CPU"]
+
+    def _build_model(self, task_type: str, random_seed: int):
+        params = {
+            "iterations": self.iterations,
+            "learning_rate": self.learning_rate,
+            "depth": self.depth,
+            "random_seed": random_seed,
+            "verbose": False,
+            "loss_function": "RMSEWithUncertainty",
+            "posterior_sampling": True,
+            "task_type": task_type,
+        }
+        if task_type == "GPU" and self.gpu_devices:
+            params["devices"] = self.gpu_devices
+        return CatBoostRegressor(**params)
     
     def fit(self, X: np.ndarray, y: np.ndarray, X_val: np.ndarray | None = None, y_val: np.ndarray | None = None) -> None:
         """Train ensemble of CatBoost models with proper uncertainty estimation."""
@@ -42,32 +73,48 @@ class CatBoostBaseline:
         
         self.models = []
         for i in range(self.n_models):
-            model = CatBoostRegressor(
-                iterations=self.iterations,
-                learning_rate=self.learning_rate,
-                depth=self.depth,
-                random_seed=self.random_seed + i,
-                verbose=False,
-                loss_function="RMSEWithUncertainty",
-                posterior_sampling=True,
-            )
-            
             # Convert to DataFrame for CatBoost
             X_df = pd.DataFrame(X, columns=[f"feature_{j}" for j in range(X.shape[1])])
             eval_set = None
             if X_val is not None and y_val is not None:
                 X_val_df = pd.DataFrame(X_val, columns=X_df.columns)
                 eval_set = (X_val_df, y_val)
-            
-            model.fit(
-                X_df,
-                y,
-                eval_set=eval_set,
-                use_best_model=True if eval_set is not None else False,
-                verbose=False,
-                early_stopping_rounds=50 if eval_set is not None else None,
+
+            task_candidates = (
+                [self._resolved_task_type]
+                if self._resolved_task_type is not None
+                else self._candidate_task_types()
             )
-            self.models.append(model)
+            last_error: Exception | None = None
+
+            for task_type in task_candidates:
+                model = self._build_model(task_type=task_type, random_seed=self.random_seed + i)
+                try:
+                    model.fit(
+                        X_df,
+                        y,
+                        eval_set=eval_set,
+                        use_best_model=True if eval_set is not None else False,
+                        verbose=False,
+                        early_stopping_rounds=50 if eval_set is not None else None,
+                    )
+                    if self._resolved_task_type is None:
+                        self._resolved_task_type = task_type
+                        self.logger.info(f"CatBoost execution device resolved to {task_type}")
+                    self.models.append(model)
+                    break
+                except CatBoostError as exc:
+                    last_error = exc
+                    if self.compute_device == "auto" and task_type == "GPU":
+                        self.logger.warning(
+                            f"CatBoost GPU setup failed, falling back to CPU: {exc}"
+                        )
+                        continue
+                    raise
+            else:
+                if last_error is not None:
+                    raise last_error
+                raise RuntimeError("Failed to initialize CatBoost model")
             
             if (i + 1) % 5 == 0:
                 self.logger.info(f"Trained {i+1}/{self.n_models} models")
