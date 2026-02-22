@@ -44,6 +44,18 @@ class TabularPreprocessor:
         self.target_std_: Optional[float] = None
         self.num_classes_: Optional[int] = None  # NEW: For classification tasks
 
+    @staticmethod
+    def _to_float_feature_matrix(X: pd.DataFrame | np.ndarray) -> np.ndarray:
+        """Convert feature matrix to float64, coercing non-numeric values to NaN."""
+        if isinstance(X, pd.DataFrame):
+            return X.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
+
+        arr = np.asarray(X)
+        if arr.dtype.kind in "biufc":
+            return arr.astype(np.float64, copy=False)
+
+        return pd.DataFrame(arr).apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
+
     def fit(self, df: pd.DataFrame) -> "TabularPreprocessor":
         logger = get_logger("preprocess")
         
@@ -53,7 +65,7 @@ class TabularPreprocessor:
             features = df.drop(columns=[self.target_column]) if self.target_column in df.columns else df.copy()
             X = features if self.feature_columns is None else features[self.feature_columns]
             colnames = X.columns.tolist() if isinstance(X, pd.DataFrame) else [f"feature_{i}" for i in range(X.shape[1])]
-            X_values = X.values if isinstance(X, pd.DataFrame) else X
+            X_values = self._to_float_feature_matrix(X)
             
             logger.debug(f"Feature matrix shape: {X_values.shape}")
             log_config(vars(self.config), logger, "Preprocessing config")
@@ -194,7 +206,8 @@ class TabularPreprocessor:
         logger.debug(f"Transforming data shape: {df.shape}")
         features = df.drop(columns=[self.target_column]) if self.target_column in df.columns else df.copy()
         X = features if self.feature_columns is None else features[self.feature_columns]
-        X_t = self.pipeline.transform(X.values)
+        X_values = self._to_float_feature_matrix(X)
+        X_t = self.pipeline.transform(X_values)
         logger.info(f"Transformed feature matrix: {X.shape} -> {X_t.shape}")
 
         y_t: Optional[np.ndarray] = None
@@ -241,5 +254,4 @@ class TabularPreprocessor:
         if self.config.target_standardize and self.target_std_ is not None:
             return uncertainty_standardized * self.target_std_
         return uncertainty_standardized
-
 

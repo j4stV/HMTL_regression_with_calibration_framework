@@ -67,3 +67,46 @@ def test_fit_ensemble_propagates_task_type(monkeypatch):
     assert avg_score == 0.123
     assert captured_task_types == ["classification", "classification"]
     assert captured_sigma_weights == [0.777, 0.777]
+
+
+def test_fit_ensemble_stratified_kfold_cycles_when_requested_splits_too_high(monkeypatch):
+    captured_val_sizes: list[int] = []
+
+    def fake_train_model(
+        model,
+        X_tr,
+        y_tr,
+        X_va,
+        y_va,
+        n_bins,
+        cfg,
+        task_loss=None,
+        task_metrics=None,
+        history=None,
+        history_meta=None,
+    ):
+        captured_val_sizes.append(int(len(X_va)))
+        return 0.5
+
+    monkeypatch.setattr("src.train.loop.train_model", fake_train_model)
+
+    X_tr = np.random.randn(12, 4)
+    y_tr = np.array([0.0] * 4 + [1.0] * 4 + [2.0] * 4)
+    X_va = np.random.randn(5, 4)
+    y_va = np.random.randn(5)
+
+    models, avg_score = fit_ensemble(
+        build_model_fn=lambda: _DummyModel(),
+        X_tr=X_tr,
+        y_tr=y_tr,
+        X_va=X_va,
+        y_va=y_va,
+        n_bins=3,
+        ens_cfg=EnsembleConfig(n_models=6, bagging="stratified_kfold"),
+        train_cfg=TrainConfig(epochs=1, batch_size=4, seed=321),
+    )
+
+    assert len(models) == 6
+    assert avg_score == 0.5
+    # With 12 samples and 3 balanced bins, effective_splits=4 -> fold val size is 3.
+    assert captured_val_sizes == [3, 3, 3, 3, 3, 3]

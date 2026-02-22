@@ -241,6 +241,7 @@ def test_run_automlbenchmark_experiments_high_level_progress_only(monkeypatch, t
         output_dir=tmp_path / "out",
         sizes=[0.5],
         dataset_id=123,
+        dataset_ids=None,
         study_id=269,
         seed=42,
         seeds=None,
@@ -278,12 +279,114 @@ def test_run_automlbenchmark_experiments_rejects_nonpositive_dataset_workers(tmp
             output_dir=tmp_path / "out",
             sizes=[0.5],
             dataset_id=123,
+            dataset_ids=None,
             study_id=269,
             seed=42,
             seeds=None,
             n_seeds=2,
             max_datasets=None,
             max_dataset_workers=0,
+            baselines=["catboost"],
+            train_ratio=0.8,
+            val_ratio=0.1,
+            test_ratio=0.1,
+            high_level_progress_only=True,
+        )
+
+
+def test_run_automlbenchmark_experiments_accepts_explicit_dataset_ids(monkeypatch, tmp_path: Path):
+    model_cfg = tmp_path / "model.yaml"
+    train_cfg = tmp_path / "train.yaml"
+    ensemble_cfg = tmp_path / "ensemble.yaml"
+    data_cfg = tmp_path / "data.yaml"
+
+    model_cfg.write_text("{}", encoding="utf-8")
+    train_cfg.write_text("{}", encoding="utf-8")
+    ensemble_cfg.write_text("{}", encoding="utf-8")
+    data_cfg.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        size_script,
+        "get_regression_datasets",
+        lambda study_id: (_ for _ in ()).throw(AssertionError("should not query study datasets")),
+    )
+
+    def fake_run_single_dataset_experiment(
+        *,
+        dataset_meta,
+        sizes,
+        seeds,
+        model_cfg,
+        train_cfg_yaml,
+        ensemble_cfg_yaml,
+        preprocess_config,
+        train_ratio,
+        val_ratio,
+        test_ratio,
+        baselines,
+        split_seed,
+        output_dir,
+        study_id,
+        config_paths,
+        show_trial_progress=False,
+        show_inner_progress=True,
+    ):
+        return {"dataset_id": int(dataset_meta.dataset_id), "dataset_name": dataset_meta.dataset_name, "sizes": {}}
+
+    monkeypatch.setattr(size_script, "run_single_dataset_experiment", fake_run_single_dataset_experiment)
+
+    results = size_script.run_automlbenchmark_experiments(
+        model_cfg_path=model_cfg,
+        train_cfg_path=train_cfg,
+        ensemble_cfg_path=ensemble_cfg,
+        data_cfg_path=data_cfg,
+        output_dir=tmp_path / "out",
+        sizes=[0.5],
+        dataset_id=None,
+        dataset_ids=[102, 101, 102],
+        study_id=269,
+        seed=42,
+        seeds=None,
+        n_seeds=1,
+        max_datasets=None,
+        max_dataset_workers=1,
+        baselines=["catboost"],
+        train_ratio=0.8,
+        val_ratio=0.1,
+        test_ratio=0.1,
+        high_level_progress_only=True,
+    )
+
+    assert [item["dataset_id"] for item in results] == [102, 101]
+
+
+def test_run_automlbenchmark_experiments_rejects_dataset_id_and_dataset_ids(tmp_path: Path):
+    model_cfg = tmp_path / "model.yaml"
+    train_cfg = tmp_path / "train.yaml"
+    ensemble_cfg = tmp_path / "ensemble.yaml"
+    data_cfg = tmp_path / "data.yaml"
+
+    model_cfg.write_text("{}", encoding="utf-8")
+    train_cfg.write_text("{}", encoding="utf-8")
+    ensemble_cfg.write_text("{}", encoding="utf-8")
+    data_cfg.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Use either dataset_id or dataset_ids, not both"):
+        size_script.run_automlbenchmark_experiments(
+            model_cfg_path=model_cfg,
+            train_cfg_path=train_cfg,
+            ensemble_cfg_path=ensemble_cfg,
+            data_cfg_path=data_cfg,
+            output_dir=tmp_path / "out",
+            sizes=[0.5],
+            dataset_id=123,
+            dataset_ids=[123, 124],
+            study_id=269,
+            seed=42,
+            seeds=None,
+            n_seeds=1,
+            max_datasets=None,
+            max_dataset_workers=1,
             baselines=["catboost"],
             train_ratio=0.8,
             val_ratio=0.1,
@@ -399,6 +502,7 @@ def test_run_automlbenchmark_experiments_parallel_branch_and_ordering(monkeypatc
         output_dir=tmp_path / "out",
         sizes=[0.5],
         dataset_id=None,
+        dataset_ids=None,
         study_id=269,
         seed=42,
         seeds=None,
@@ -523,6 +627,7 @@ def test_run_automlbenchmark_experiments_parallel_future_failure(monkeypatch, tm
         output_dir=tmp_path / "out",
         sizes=[0.5],
         dataset_id=None,
+        dataset_ids=None,
         study_id=269,
         seed=42,
         seeds=None,
@@ -649,6 +754,7 @@ def test_run_automlbenchmark_experiments_parallel_keyboard_interrupt_forces_shut
             output_dir=tmp_path / "out",
             sizes=[0.5],
             dataset_id=None,
+            dataset_ids=None,
             study_id=269,
             seed=42,
             seeds=None,

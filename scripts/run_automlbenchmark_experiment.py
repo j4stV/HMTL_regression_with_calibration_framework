@@ -861,11 +861,13 @@ def run_automlbenchmark_experiments(
     output_dir: Path,
     sizes: list[float],
     dataset_id: int | None,
+    dataset_ids: list[int] | None,
     study_id: int,
     seed: int,
     seeds: list[int] | None,
     n_seeds: int,
     max_datasets: int | None,
+    reverse_dataset_order: bool = False,
     max_dataset_workers: int = 1,
     baselines: list[str],
     train_ratio: float,
@@ -889,6 +891,8 @@ def run_automlbenchmark_experiments(
 
     if max_dataset_workers < 1:
         raise ValueError("max_dataset_workers must be >= 1")
+    if dataset_id is not None and dataset_ids:
+        raise ValueError("Use either dataset_id or dataset_ids, not both")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -905,6 +909,12 @@ def run_automlbenchmark_experiments(
     datasets_meta: list[DatasetMeta]
     if dataset_id is not None:
         datasets_meta = [DatasetMeta(dataset_id=dataset_id, dataset_name=f"dataset_{dataset_id}")]
+    elif dataset_ids:
+        selected_dataset_ids = list(dict.fromkeys(int(did) for did in dataset_ids))
+        datasets_meta = [
+            DatasetMeta(dataset_id=did, dataset_name=f"dataset_{did}")
+            for did in selected_dataset_ids
+        ]
     else:
         datasets_info = get_regression_datasets(study_id=study_id)
         datasets_meta = [
@@ -916,12 +926,16 @@ def run_automlbenchmark_experiments(
             for info in datasets_info
         ]
 
+    if reverse_dataset_order:
+        datasets_meta = list(reversed(datasets_meta))
+
     if max_datasets is not None:
         datasets_meta = datasets_meta[:max_datasets]
 
     effective_workers = min(max_dataset_workers, len(datasets_meta))
 
     logger.info("Processing %d datasets", len(datasets_meta))
+    logger.info("Dataset order: %s", "reverse" if reverse_dataset_order else "forward")
     logger.info(
         "Dataset workers: requested=%d effective=%d",
         max_dataset_workers,
@@ -1100,6 +1114,13 @@ def main() -> None:
         help="Train size ratios to evaluate",
     )
     parser.add_argument("--dataset-id", type=int, default=None, help="Run only this dataset ID")
+    parser.add_argument(
+        "--dataset-ids",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Run only these dataset IDs (space-separated list)",
+    )
     parser.add_argument("--study-id", type=int, default=269, help="OpenML study ID")
     parser.add_argument("--seed", type=int, default=42, help="Base random seed")
     parser.add_argument("--seeds", nargs="+", type=int, default=None, help="Explicit seed list")
@@ -1112,6 +1133,11 @@ def main() -> None:
         help="Number of seeds (when --seeds not provided)",
     )
     parser.add_argument("--max-datasets", type=int, default=None, help="Limit number of datasets")
+    parser.add_argument(
+        "--reverse-dataset-order",
+        action="store_true",
+        help="Iterate datasets in reverse order before applying --max-datasets",
+    )
     parser.add_argument(
         "--max-dataset-workers",
         "--max_dataset_workers",
@@ -1166,11 +1192,13 @@ def main() -> None:
             output_dir=output_dir,
             sizes=args.sizes,
             dataset_id=args.dataset_id,
+            dataset_ids=args.dataset_ids,
             study_id=args.study_id,
             seed=args.seed,
             seeds=args.seeds,
             n_seeds=args.n_seeds,
             max_datasets=args.max_datasets,
+            reverse_dataset_order=args.reverse_dataset_order,
             max_dataset_workers=args.max_dataset_workers,
             baselines=args.baselines,
             train_ratio=args.train_ratio,

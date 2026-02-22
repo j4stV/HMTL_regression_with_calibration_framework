@@ -89,3 +89,32 @@ def test_preprocessor_target_standardization(sample_data):
     assert abs(np.mean(y_transformed)) < 1e-10
     assert abs(np.std(y_transformed) - 1.0) < 1e-10
 
+
+def test_preprocessor_handles_nullable_integer_features_with_float_imputation():
+    """Ensure integer-like dtypes are safely coerced before constant imputation."""
+    df = pd.DataFrame(
+        {
+            "feature_uint8": pd.Series([1, pd.NA, 3, 4], dtype="UInt8"),
+            "feature_int64": pd.Series([10, 20, pd.NA, 40], dtype="Int64"),
+            "target": [0.5, 1.5, 2.5, 3.5],
+        }
+    )
+
+    config = PreprocessConfig(
+        impute_const=-1.0,
+        use_dynamic_binning=False,
+        quantile_binning_enabled=False,
+        standardize=False,
+        pca_enabled=False,
+        target_standardize=False,
+    )
+
+    preprocessor = TabularPreprocessor(config, target_column="target")
+    preprocessor.fit(df)
+    X_transformed, y_transformed = preprocessor.transform(df)
+
+    assert X_transformed.shape == (4, 2)
+    assert y_transformed is not None
+    assert X_transformed.dtype.kind == "f"
+    assert not np.isnan(X_transformed).any()
+

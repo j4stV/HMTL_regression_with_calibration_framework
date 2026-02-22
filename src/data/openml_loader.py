@@ -435,20 +435,38 @@ def load_dataset(
         else:
             df = pd.DataFrame(X, columns=attribute_names)
         
-        # Handle categorical features - convert string categories to numeric codes
-        # OpenML datasets may have categorical features as strings, but preprocessor expects numeric
-        from sklearn.preprocessing import LabelEncoder
-        
+        # Normalize feature dtypes to numeric floats for downstream preprocessing.
+        # This handles object/category/string columns and preserves missing values.
+        normalized_features: dict[str, pd.Series] = {}
         for col in df.columns:
-            if df[col].dtype == 'object' or (len(df) > 0 and isinstance(df[col].iloc[0], str)):
-                # Try to convert to numeric first
-                try:
-                    df[col] = pd.to_numeric(df[col], errors='raise')
-                except (ValueError, TypeError):
-                    # If conversion fails, encode as numeric codes (LabelEncoder)
-                    le = LabelEncoder()
-                    df[col] = le.fit_transform(df[col].astype(str))
-                    logger.debug(f"Encoded categorical column '{col}' using LabelEncoder ({len(le.classes_)} categories)")
+            col_series = df[col]
+
+            if pd.api.types.is_numeric_dtype(col_series):
+                normalized_features[col] = pd.to_numeric(col_series, errors="coerce").astype(np.float64)
+                continue
+
+            numeric_series = pd.to_numeric(col_series, errors="coerce")
+            n_non_null = int(col_series.notna().sum())
+            n_numeric = int(numeric_series.notna().sum())
+            if n_numeric == n_non_null:
+                normalized_features[col] = numeric_series.astype(np.float64)
+                logger.debug("Column '%s' parsed as numeric from non-numeric dtype", col)
+                continue
+
+            # Fallback: stable categorical coding with NaN for missing entries.
+            categorical_codes = pd.Categorical(col_series).codes.astype(np.float64)
+            categorical_codes[categorical_codes < 0] = np.nan
+            normalized_features[col] = pd.Series(categorical_codes, index=col_series.index)
+            n_categories = int(pd.Series(categorical_codes).dropna().nunique())
+            logger.debug(
+                "Encoded categorical column '%s' using category codes (%d categories)",
+                col,
+                n_categories,
+            )
+
+        df = pd.DataFrame(normalized_features, index=df.index)
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype(np.float64)
         
         # Add target column
         target_col = target_column or dataset.default_target_attribute

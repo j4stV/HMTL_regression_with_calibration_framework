@@ -94,12 +94,45 @@ def fit_ensemble(
         y_bins = compute_bins(y_tr, n_bins, use_rounding=use_rounding)
         scores: list[float] = []
         
-        # Prepare splits if using StratifiedKFold
+        # Prepare splits if using StratifiedKFold. For small datasets, adapt safely
+        # instead of failing with n_splits > members per class.
+        active_bagging = ens_cfg.bagging
         splits = None
+        effective_splits = ens_cfg.n_models
         if ens_cfg.bagging == "stratified_kfold":
-            skf = StratifiedKFold(n_splits=ens_cfg.n_models, shuffle=True, random_state=base_seed)
-            splits = list(skf.split(X_tr, y_bins))
-            logger.info(f"Using StratifiedKFold with {ens_cfg.n_models} splits")
+            unique_bins, bin_counts = np.unique(y_bins, return_counts=True)
+            min_bin_count = int(np.min(bin_counts)) if len(bin_counts) > 0 else 0
+            n_unique_bins = int(len(unique_bins))
+            effective_splits = min(ens_cfg.n_models, min_bin_count)
+
+            if n_unique_bins < 2 or min_bin_count < 2 or effective_splits < 2:
+                active_bagging = "stratified_bins"
+                logger.warning(
+                    "StratifiedKFold is infeasible (unique_bins=%d, min_bin_count=%d, "
+                    "requested_splits=%d). Falling back to stratified_bins for this run.",
+                    n_unique_bins,
+                    min_bin_count,
+                    ens_cfg.n_models,
+                )
+            else:
+                skf = StratifiedKFold(
+                    n_splits=effective_splits,
+                    shuffle=True,
+                    random_state=base_seed,
+                )
+                splits = list(skf.split(X_tr, y_bins))
+                if effective_splits < ens_cfg.n_models:
+                    logger.warning(
+                        "Requested %d StratifiedKFold splits, but only %d are feasible. "
+                        "Cycling folds to train all %d models.",
+                        ens_cfg.n_models,
+                        effective_splits,
+                        ens_cfg.n_models,
+                    )
+                logger.info(
+                    "Using StratifiedKFold with %d effective splits",
+                    effective_splits,
+                )
         
         # Progress bar for ensemble training
         ensemble_pbar = tqdm(
@@ -135,15 +168,15 @@ def fit_ensemble(
             )
             
             # Sample indices based on bagging strategy
-            if ens_cfg.bagging == "stratified_kfold":
+            if active_bagging == "stratified_kfold":
                 # Use StratifiedKFold splits ()
-                train_idx, val_idx = splits[i]
+                train_idx, val_idx = splits[i % effective_splits]
                 X_tr_split = X_tr[train_idx]
                 y_tr_split = y_tr[train_idx]
                 X_va_split = X_tr[val_idx]  # Use fold validation set instead of global validation
                 y_va_split = y_tr[val_idx]
                 logger.debug(f"Model {i+1}: Using StratifiedKFold split (train: {len(train_idx)}, val: {len(val_idx)})")
-            elif ens_cfg.bagging == "stratified_bins":
+            elif active_bagging == "stratified_bins":
                 idx = stratified_bootstrap_indices(y_bins, size=len(y_tr), rng=rng)
                 X_tr_split = X_tr[idx]
                 y_tr_split = y_tr[idx]
