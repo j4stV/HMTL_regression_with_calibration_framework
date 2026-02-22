@@ -41,6 +41,40 @@ def _normalize_amp_dtype(amp_dtype: str) -> str:
     return normalized
 
 
+def _cuda_supports_native_bf16() -> bool:
+    is_bf16_supported = getattr(torch.cuda, "is_bf16_supported", None)
+    if not callable(is_bf16_supported):
+        return False
+
+    try:
+        bf16_supported = bool(is_bf16_supported(including_emulation=False))
+    except TypeError:
+        bf16_supported = bool(is_bf16_supported())
+    except Exception:
+        return False
+
+    if not bf16_supported:
+        return False
+
+    get_capability = getattr(torch.cuda, "get_device_capability", None)
+    if callable(get_capability):
+        try:
+            major, _minor = get_capability(torch.cuda.current_device())
+            if int(major) < 8:
+                return False
+        except TypeError:
+            try:
+                major, _minor = get_capability()
+                if int(major) < 8:
+                    return False
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    return True
+
+
 def _resolve_inference_amp_mode(
     device: torch.device,
     amp_enabled: bool,
@@ -57,7 +91,7 @@ def _resolve_inference_amp_mode(
         )
 
     requested_dtype = _normalize_amp_dtype(amp_dtype)
-    bf16_supported = bool(torch.cuda.is_bf16_supported())
+    bf16_supported = _cuda_supports_native_bf16()
 
     if requested_dtype == "auto":
         if bf16_supported:
@@ -65,7 +99,7 @@ def _resolve_inference_amp_mode(
         return _InferenceAmpState(
             enabled=True,
             dtype=torch.float16,
-            reason="BF16 not supported on this CUDA device; falling back to FP16",
+            reason="BF16 native support not available on this CUDA device; falling back to FP16",
         )
 
     if requested_dtype == "bf16":
@@ -74,7 +108,7 @@ def _resolve_inference_amp_mode(
         return _InferenceAmpState(
             enabled=True,
             dtype=torch.float16,
-            reason="Requested BF16, but it is not supported; falling back to FP16",
+            reason="Requested BF16, but native BF16 support is unavailable; falling back to FP16",
         )
 
     return _InferenceAmpState(enabled=True, dtype=torch.float16)

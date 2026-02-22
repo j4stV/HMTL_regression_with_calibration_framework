@@ -55,6 +55,21 @@ def test_train_amp_auto_falls_back_to_fp16(monkeypatch) -> None:
     assert state.reason is not None and "falling back to fp16" in state.reason.lower()
 
 
+def test_train_amp_auto_falls_back_when_bf16_is_emulated(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *args, **kwargs: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *args, **kwargs: (7, 5))
+    state = _resolve_amp_mode(
+        device=torch.device("cuda"),
+        amp_enabled=True,
+        amp_dtype="auto",
+    )
+    assert state.enabled is True
+    assert state.dtype == torch.float16
+    assert state.use_grad_scaler is True
+    assert state.reason is not None and "falling back to fp16" in state.reason.lower()
+
+
 def test_train_amp_bf16_falls_back_to_fp16(monkeypatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
     state = _resolve_amp_mode(
