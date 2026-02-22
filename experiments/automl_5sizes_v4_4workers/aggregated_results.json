@@ -10,7 +10,7 @@
     "n_features": 14,
     "target_column": "RS",
     "run_meta": {
-      "timestamp_utc": "2026-02-22T05:03:39.576895+00:00",
+      "timestamp_utc": "2026-02-22T06:17:25.956728+00:00",
       "study_id": 269,
       "seed_list": [
         42
@@ -38,7 +38,7 @@
         "test_ratio": 0.1,
         "split_seed": 42
       },
-      "output_folder": "/Users/j4stv/All_Projects/Study/HMTL_with_calibration/experiments/automl_5sizes_v1/dataset_41021_moneyball"
+      "output_folder": "/Users/j4stv/All_Projects/Study/HMTL_with_calibration/experiments/automl_5sizes_v4_4workers/dataset_41021_moneyball"
     },
     "sizes": {
       "20": {
@@ -50,23 +50,30 @@
             "status": "ok",
             "n_train_samples": 196,
             "hmtl": {
-              "rmse": 0.4220928247025882,
-              "mse": 0.17816235266540983,
-              "mae": 0.31786801502769196,
-              "r_auc_mse": 0.17108303264286084,
-              "mean_uncertainty": 0.7305975556373596,
-              "mean_epistemic": 0.22574381530284882,
-              "mean_aleatoric": 0.6933947801589966,
-              "ensemble_avg_val_r_auc_mse": 0.19469226799077458
+              "rmse": 0.42111802472524973,
+              "mse": 0.17734039074849606,
+              "mae": 0.31512526346624276,
+              "r_auc_mse": 0.1538604019270293,
+              "mean_uncertainty": 0.7299063205718994,
+              "mean_epistemic": 0.22323131561279297,
+              "mean_aleatoric": 0.6933490633964539,
+              "ensemble_avg_val_r_auc_mse": 0.18602368562585775
             },
             "baselines": {
               "catboost": {
-                "error": "catboost/private/libs/algo/apply.cpp:542: Not enough trees in model for 10 virtual Ensembles"
+                "rmse": 0.5776993544240776,
+                "mse": 0.333736544101996,
+                "mae": 0.44611635140787625,
+                "r_auc_mse": 0.17508495337722058,
+                "mean_uncertainty": 0.30935982113959093,
+                "mean_epistemic": 0.08120978898416066,
+                "mean_aleatoric": 0.2958188253399047
               }
             },
             "delta_vs_hmtl": {
               "catboost": {
-                "error": "catboost/private/libs/algo/apply.cpp:542: Not enough trees in model for 10 virtual Ensembles"
+                "delta_rmse": 0.15658132969882788,
+                "delta_r_auc_mse": 0.02122455145019128
               }
             }
           }
@@ -78,65 +85,123 @@
           "failed_seeds": [],
           "hmtl": {
             "ensemble_avg_val_r_auc_mse": {
-              "mean": 0.19469226799077458,
+              "mean": 0.18602368562585775,
               "std": 0.0
             },
             "mae": {
-              "mean": 0.31786801502769196,
+              "mean": 0.31512526346624276,
               "std": 0.0
             },
             "mean_aleatoric": {
-              "mean": 0.6933947801589966,
+              "mean": 0.6933490633964539,
               "std": 0.0
             },
             "mean_epistemic": {
-              "mean": 0.22574381530284882,
+              "mean": 0.22323131561279297,
               "std": 0.0
             },
             "mean_uncertainty": {
-              "mean": 0.7305975556373596,
+              "mean": 0.7299063205718994,
               "std": 0.0
             },
             "mse": {
-              "mean": 0.17816235266540983,
+              "mean": 0.17734039074849606,
               "std": 0.0
             },
             "r_auc_mse": {
-              "mean": 0.17108303264286084,
+              "mean": 0.1538604019270293,
               "std": 0.0
             },
             "rmse": {
-              "mean": 0.4220928247025882,
+              "mean": 0.42111802472524973,
               "std": 0.0
             }
           },
           "baselines": {
             "catboost": {
-              "n_successful": 0
+              "n_successful": 1,
+              "mae": {
+                "mean": 0.44611635140787625,
+                "std": 0.0
+              },
+              "mean_aleatoric": {
+                "mean": 0.2958188253399047,
+                "std": 0.0
+              },
+              "mean_epistemic": {
+                "mean": 0.08120978898416066,
+                "std": 0.0
+              },
+              "mean_uncertainty": {
+                "mean": 0.30935982113959093,
+                "std": 0.0
+              },
+              "mse": {
+                "mean": 0.333736544101996,
+                "std": 0.0
+              },
+              "r_auc_mse": {
+                "mean": 0.17508495337722058,
+                "std": 0.0
+              },
+              "rmse": {
+                "mean": 0.5776993544240776,
+                "std": 0.0
+              }
             }
           },
           "delta_vs_hmtl": {
             "catboost": {
-              "n_successful": 0
+              "n_successful": 1,
+              "delta_r_auc_mse": {
+                "mean": 0.02122455145019128,
+                "std": 0.0
+              },
+              "delta_rmse": {
+                "mean": 0.15658132969882788,
+                "std": 0.0
+              }
             }
           }
         },
         "hmtl": {
-          "ensemble_avg_val_r_auc_mse": 0.19469226799077458,
-          "mae": 0.31786801502769196,
-          "mean_aleatoric": 0.6933947801589966,
-          "mean_epistemic": 0.22574381530284882,
-          "mean_uncertainty": 0.7305975556373596,
-          "mse": 0.17816235266540983,
-          "r_auc_mse": 0.17108303264286084,
-          "rmse": 0.4220928247025882
+          "ensemble_avg_val_r_auc_mse": 0.18602368562585775,
+          "mae": 0.31512526346624276,
+          "mean_aleatoric": 0.6933490633964539,
+          "mean_epistemic": 0.22323131561279297,
+          "mean_uncertainty": 0.7299063205718994,
+          "mse": 0.17734039074849606,
+          "r_auc_mse": 0.1538604019270293,
+          "rmse": 0.42111802472524973
         },
         "baselines": {
-          "catboost": {}
+          "catboost": {
+            "mae": 0.44611635140787625,
+            "mean_aleatoric": 0.2958188253399047,
+            "mean_epistemic": 0.08120978898416066,
+            "mean_uncertainty": 0.30935982113959093,
+            "mse": 0.333736544101996,
+            "r_auc_mse": 0.17508495337722058,
+            "rmse": 0.5776993544240776
+          }
         },
         "delta_vs_hmtl": {
-          "catboost": {}
-        }
+          "catboost": {
+            "delta_r_auc_mse": 0.02122455145019128,
+            "delta_rmse": 0.15658132969882788
+          }
+        },
+        "catboost": {
+          "mae": 0.44611635140787625,
+          "mean_aleatoric": 0.2958188253399047,
+          "mean_epistemic": 0.08120978898416066,
+          "mean_uncertainty": 0.30935982113959093,
+          "mse": 0.333736544101996,
+          "r_auc_mse": 0.17508495337722058,
+          "rmse": 0.5776993544240776
+        },
+        "delta_rmse": 0.15658132969882788,
+        "delta_r_auc_mse": 0.02122455145019128
       },
       "40": {
         "size_ratio": 0.4,

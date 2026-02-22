@@ -1,0 +1,490 @@
+{
+  "summary": {
+    "n_datasets": 18,
+    "n_data_points": 87,
+    "sizes_tested": [
+      0.2,
+      0.4,
+      0.6,
+      0.8,
+      1.0
+    ],
+    "baseline": "catboost",
+    "min_datasets_required": 3,
+    "min_size_points_required": 3,
+    "alpha": 0.05
+  },
+  "status": "completed",
+  "by_size": {
+    "0.2": {
+      "size_ratio": 0.2,
+      "n_datasets": 16,
+      "mean_delta_rmse": -0.05760159692034412,
+      "std_delta_rmse": 0.0979458582779523,
+      "mean_delta_r_auc_mse": -0.05825173591848583,
+      "std_delta_r_auc_mse": 0.2902464178819104,
+      "ttest_greater_rmse": {
+        "statistic": -2.352385202726241,
+        "p_value": 0.9836369693615882
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 35.0,
+        "p_value": 0.9583740234375
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": -0.8027900753240113,
+        "p_value": 0.7826837981102328
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 23.0,
+        "p_value": 0.99224853515625
+      },
+      "cohens_d_rmse": -0.5880963006815603,
+      "cohens_d_r_auc_mse": -0.2006975188310028,
+      "n_favor_hmtl_rmse": 7,
+      "n_favor_hmtl_r_auc_mse": 3
+    },
+    "0.4": {
+      "size_ratio": 0.4,
+      "n_datasets": 17,
+      "mean_delta_rmse": -0.05480296719792333,
+      "std_delta_rmse": 0.10386992841785497,
+      "mean_delta_r_auc_mse": -0.14449324235910097,
+      "std_delta_r_auc_mse": 0.271328467835332,
+      "ttest_greater_rmse": {
+        "statistic": -2.1753978826797393,
+        "p_value": 0.9775318543999623
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 30.0,
+        "p_value": 0.9883880615234375
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": -2.1957183674368803,
+        "p_value": 0.9783982348116103
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 18.0,
+        "p_value": 0.9984207153320312
+      },
+      "cohens_d_rmse": -0.5276114851784459,
+      "cohens_d_r_auc_mse": -0.5325399266500603,
+      "n_favor_hmtl_rmse": 4,
+      "n_favor_hmtl_r_auc_mse": 2
+    },
+    "0.6": {
+      "size_ratio": 0.6,
+      "n_datasets": 18,
+      "mean_delta_rmse": -0.027705656788712053,
+      "std_delta_rmse": 0.15161878407265922,
+      "mean_delta_r_auc_mse": -0.14171241029318404,
+      "std_delta_r_auc_mse": 0.18294270046778843,
+      "ttest_greater_rmse": {
+        "statistic": -0.7752677049488936,
+        "p_value": 0.7755839632548714
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 57.0,
+        "p_value": 0.8939285278320312
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": -3.2864653043944028,
+        "p_value": 0.9978222535617937
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 17.0,
+        "p_value": 0.9993553161621094
+      },
+      "cohens_d_rmse": -0.18273235046809808,
+      "cohens_d_r_auc_mse": -0.7746273009571978,
+      "n_favor_hmtl_rmse": 6,
+      "n_favor_hmtl_r_auc_mse": 3
+    },
+    "0.8": {
+      "size_ratio": 0.8,
+      "n_datasets": 18,
+      "mean_delta_rmse": -0.045937191702647685,
+      "std_delta_rmse": 0.14932852111799969,
+      "mean_delta_r_auc_mse": -0.1403773378752843,
+      "std_delta_r_auc_mse": 0.3001626497096838,
+      "ttest_greater_rmse": {
+        "statistic": -1.3051424946185937,
+        "p_value": 0.8953828270019205
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 60.0,
+        "p_value": 0.86773681640625
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": -1.9841596074501808,
+        "p_value": 0.9681882433709844
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 34.0,
+        "p_value": 0.989593505859375
+      },
+      "cohens_d_rmse": -0.307625036119845,
+      "cohens_d_r_auc_mse": -0.46767090446148696,
+      "n_favor_hmtl_rmse": 7,
+      "n_favor_hmtl_r_auc_mse": 5
+    },
+    "1.0": {
+      "size_ratio": 1.0,
+      "n_datasets": 18,
+      "mean_delta_rmse": -0.042998280757948835,
+      "std_delta_rmse": 0.13959446200163803,
+      "mean_delta_r_auc_mse": -0.09685046347954183,
+      "std_delta_r_auc_mse": 0.15991516256106686,
+      "ttest_greater_rmse": {
+        "statistic": -1.306830176527428,
+        "p_value": 0.8956634434515085
+      },
+      "wilcoxon_greater_rmse": {
+        "statistic": 49.0,
+        "p_value": 0.9458084106445312
+      },
+      "ttest_greater_r_auc_mse": {
+        "statistic": -2.569498166052599,
+        "p_value": 0.9900527248398706
+      },
+      "wilcoxon_greater_r_auc_mse": {
+        "statistic": 35.0,
+        "p_value": 0.9881629943847656
+      },
+      "cohens_d_rmse": -0.3080228265605858,
+      "cohens_d_r_auc_mse": -0.6056365258207302,
+      "n_favor_hmtl_rmse": 5,
+      "n_favor_hmtl_r_auc_mse": 6
+    }
+  },
+  "slope_analysis": {
+    "delta_rmse": {
+      "stats": {
+        "n_datasets": 18,
+        "mean_slope": -0.039542393652626094,
+        "std_slope": 0.15007016882489474,
+        "ttest_greater": {
+          "statistic": -1.11790484071801,
+          "p_value": 0.8604213762439689
+        },
+        "wilcoxon_greater": {
+          "statistic": 47.0,
+          "p_value": 0.9551162719726562
+        },
+        "insufficient": false
+      },
+      "per_dataset": [
+        {
+          "dataset_id": 216,
+          "dataset_name": "elevators",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": -0.06833746517588844,
+          "intercept": -0.25330995405828816
+        },
+        {
+          "dataset_id": 287,
+          "dataset_name": "wine_quality",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": -0.021572944373401733,
+          "intercept": -0.005837279187096217
+        },
+        {
+          "dataset_id": 416,
+          "dataset_name": "yprop_4_1",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": -0.015005681746783463,
+          "intercept": 0.0011772473152372427
+        },
+        {
+          "dataset_id": 422,
+          "dataset_name": "topo_2_1",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": -0.016889590738839114,
+          "intercept": 0.00514510884055522
+        },
+        {
+          "dataset_id": 505,
+          "dataset_name": "tecator",
+          "metric": "delta_rmse",
+          "n_points": 3,
+          "slope": -0.44097234094830307,
+          "intercept": 0.628290348324508
+        },
+        {
+          "dataset_id": 507,
+          "dataset_name": "space_ga",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": -0.12728396544233792,
+          "intercept": -0.2701464993803199
+        },
+        {
+          "dataset_id": 531,
+          "dataset_name": "boston",
+          "metric": "delta_rmse",
+          "n_points": 4,
+          "slope": -0.20704608018081894,
+          "intercept": 0.1871727086169386
+        },
+        {
+          "dataset_id": 541,
+          "dataset_name": "socmob",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": 0.025630798782075817,
+          "intercept": -0.08961988312990976
+        },
+        {
+          "dataset_id": 550,
+          "dataset_name": "quake",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": 0.0025233766497058654,
+          "intercept": -0.0025066845405874783
+        },
+        {
+          "dataset_id": 574,
+          "dataset_name": "house_16H",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": 0.2663974066714924,
+          "intercept": -0.09872442768978296
+        },
+        {
+          "dataset_id": 3050,
+          "dataset_name": "QSAR-TID-11",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": -0.03753905150253048,
+          "intercept": -0.01852738893039812
+        },
+        {
+          "dataset_id": 3277,
+          "dataset_name": "QSAR-TID-10980",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": -0.027488831870903896,
+          "intercept": 0.02520469202408193
+        },
+        {
+          "dataset_id": 41980,
+          "dataset_name": "SAT11-HAND-runtime-regression",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": -0.02329142280152146,
+          "intercept": -0.08125747370721118
+        },
+        {
+          "dataset_id": 42724,
+          "dataset_name": "OnlineNewsPopularity",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": 0.0008219355158775032,
+          "intercept": 0.007988467289300806
+        },
+        {
+          "dataset_id": 42726,
+          "dataset_name": "abalone",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": -0.075517238699963,
+          "intercept": 0.008814797778662568
+        },
+        {
+          "dataset_id": 42730,
+          "dataset_name": "us_crime",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": -0.16161904059970958,
+          "intercept": -0.031241963234249718
+        },
+        {
+          "dataset_id": 42731,
+          "dataset_name": "house_sales",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": 0.21369512245690617,
+          "intercept": -0.145619105111602
+        },
+        {
+          "dataset_id": 43071,
+          "dataset_name": "MIP-2016-regression",
+          "metric": "delta_rmse",
+          "n_points": 5,
+          "slope": 0.0017319282576738198,
+          "intercept": -0.0029559667548665677
+        }
+      ]
+    },
+    "delta_r_auc_mse": {
+      "stats": {
+        "n_datasets": 18,
+        "mean_slope": -0.04644603632793273,
+        "std_slope": 0.2706397425860144,
+        "ttest_greater": {
+          "statistic": -0.7281038682546055,
+          "p_value": 0.7617699026857467
+        },
+        "wilcoxon_greater": {
+          "statistic": 63.0,
+          "p_value": 0.8376350402832031
+        },
+        "insufficient": false
+      },
+      "per_dataset": [
+        {
+          "dataset_id": 216,
+          "dataset_name": "elevators",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": 0.005689387225658227,
+          "intercept": -0.10185902225137117
+        },
+        {
+          "dataset_id": 287,
+          "dataset_name": "wine_quality",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": 0.056269239979504226,
+          "intercept": -0.07888399987258142
+        },
+        {
+          "dataset_id": 416,
+          "dataset_name": "yprop_4_1",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": -0.27824758134554933,
+          "intercept": -0.05799004504049692
+        },
+        {
+          "dataset_id": 422,
+          "dataset_name": "topo_2_1",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": -0.11996780010157483,
+          "intercept": -0.058950060676174525
+        },
+        {
+          "dataset_id": 505,
+          "dataset_name": "tecator",
+          "metric": "delta_r_auc_mse",
+          "n_points": 3,
+          "slope": -0.1995532839371527,
+          "intercept": 0.311100293101296
+        },
+        {
+          "dataset_id": 507,
+          "dataset_name": "space_ga",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": -0.06463304641367212,
+          "intercept": -0.6911404496463772
+        },
+        {
+          "dataset_id": 531,
+          "dataset_name": "boston",
+          "metric": "delta_r_auc_mse",
+          "n_points": 4,
+          "slope": 0.606571230009888,
+          "intercept": -0.5185987669374517
+        },
+        {
+          "dataset_id": 541,
+          "dataset_name": "socmob",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": 0.025484349337045246,
+          "intercept": -0.054770321720400535
+        },
+        {
+          "dataset_id": 550,
+          "dataset_name": "quake",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": -0.09498508983297621,
+          "intercept": -0.13582767620131753
+        },
+        {
+          "dataset_id": 574,
+          "dataset_name": "house_16H",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": 0.14844001836536544,
+          "intercept": -0.10160405489355112
+        },
+        {
+          "dataset_id": 3050,
+          "dataset_name": "QSAR-TID-11",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": -0.04546972759386887,
+          "intercept": -0.023565395306503988
+        },
+        {
+          "dataset_id": 3277,
+          "dataset_name": "QSAR-TID-10980",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": -0.04582093476280904,
+          "intercept": -0.015428943429789434
+        },
+        {
+          "dataset_id": 41980,
+          "dataset_name": "SAT11-HAND-runtime-regression",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": 0.03111519067541682,
+          "intercept": -0.29748460953947
+        },
+        {
+          "dataset_id": 42724,
+          "dataset_name": "OnlineNewsPopularity",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": -0.8432720060183477,
+          "intercept": 0.7888500410266016
+        },
+        {
+          "dataset_id": 42726,
+          "dataset_name": "abalone",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": -0.05284264551314549,
+          "intercept": 0.007195101668665354
+        },
+        {
+          "dataset_id": 42730,
+          "dataset_name": "us_crime",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": -0.11781792231967153,
+          "intercept": -0.1356163297632763
+        },
+        {
+          "dataset_id": 42731,
+          "dataset_name": "house_sales",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": 0.05725576673312082,
+          "intercept": -0.04516642356921765
+        },
+        {
+          "dataset_id": 43071,
+          "dataset_name": "MIP-2016-regression",
+          "metric": "delta_r_auc_mse",
+          "n_points": 5,
+          "slope": 0.09575620160997993,
+          "intercept": -0.30947266651887856
+        }
+      ]
+    }
+  },
+  "verdict": {
+    "delta_rmse": "not_supported",
+    "delta_r_auc_mse": "not_supported"
+  }
+}

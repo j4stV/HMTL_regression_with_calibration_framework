@@ -1,0 +1,612 @@
+{
+  "dataset_id": 505,
+  "dataset_name": "tecator",
+  "task_id": 359934,
+  "n_samples_total": 240,
+  "n_samples_train": 192,
+  "n_samples_valid": 24,
+  "n_samples_test": 24,
+  "n_features": 124,
+  "target_column": "fat",
+  "run_meta": {
+    "timestamp_utc": "2026-02-22T11:13:07.596230+00:00",
+    "study_id": 269,
+    "seed_list": [
+      42
+    ],
+    "n_requested_seeds": 1,
+    "sizes": [
+      0.2,
+      0.4,
+      0.6,
+      0.8,
+      1.0
+    ],
+    "baselines": [
+      "catboost"
+    ],
+    "configs": {
+      "model": "configs/model_snn.yaml",
+      "train": "configs/train.yaml",
+      "ensemble": "configs/ensemble.yaml",
+      "data": "configs/data.yaml"
+    },
+    "split": {
+      "train_ratio": 0.8,
+      "val_ratio": 0.1,
+      "test_ratio": 0.1,
+      "split_seed": 42
+    },
+    "output_folder": "/Users/j4stv/All_Projects/Study/HMTL_with_calibration/experiments/automl_5sizes_v4_4workers_v2/dataset_505_tecator"
+  },
+  "sizes": {
+    "20": {
+      "size_ratio": 0.2,
+      "n_train_samples": 38,
+      "per_seed": {
+        "42": {
+          "seed": 42,
+          "status": "failed",
+          "n_train_samples": 38,
+          "hmtl": null,
+          "baselines": {},
+          "delta_vs_hmtl": {},
+          "error": "HMTL failed: n_splits=20 cannot be greater than the number of members in each class."
+        }
+      },
+      "status": "failed",
+      "aggregate_over_seeds": {
+        "n_requested": 1,
+        "n_successful": 0,
+        "failed_seeds": [
+          42
+        ],
+        "hmtl": {},
+        "baselines": {
+          "catboost": {
+            "n_successful": 0
+          }
+        },
+        "delta_vs_hmtl": {
+          "catboost": {
+            "n_successful": 0
+          }
+        }
+      },
+      "hmtl": {},
+      "baselines": {
+        "catboost": {}
+      },
+      "delta_vs_hmtl": {
+        "catboost": {}
+      }
+    },
+    "40": {
+      "size_ratio": 0.4,
+      "n_train_samples": 76,
+      "per_seed": {
+        "42": {
+          "seed": 42,
+          "status": "failed",
+          "n_train_samples": 76,
+          "hmtl": null,
+          "baselines": {},
+          "delta_vs_hmtl": {},
+          "error": "HMTL failed: n_splits=20 cannot be greater than the number of members in each class."
+        }
+      },
+      "status": "failed",
+      "aggregate_over_seeds": {
+        "n_requested": 1,
+        "n_successful": 0,
+        "failed_seeds": [
+          42
+        ],
+        "hmtl": {},
+        "baselines": {
+          "catboost": {
+            "n_successful": 0
+          }
+        },
+        "delta_vs_hmtl": {
+          "catboost": {
+            "n_successful": 0
+          }
+        }
+      },
+      "hmtl": {},
+      "baselines": {
+        "catboost": {}
+      },
+      "delta_vs_hmtl": {
+        "catboost": {}
+      }
+    },
+    "60": {
+      "size_ratio": 0.6,
+      "n_train_samples": 115,
+      "per_seed": {
+        "42": {
+          "seed": 42,
+          "status": "ok",
+          "n_train_samples": 115,
+          "hmtl": {
+            "rmse": 0.7363552842913126,
+            "mse": 0.5422191047037398,
+            "mae": 0.5817723041453192,
+            "r_auc_mse": 0.23270701234124977,
+            "mean_uncertainty": 0.7840479016304016,
+            "mean_epistemic": 0.3404894769191742,
+            "mean_aleatoric": 0.7031647562980652,
+            "ensemble_avg_val_r_auc_mse": 0.28788456213039654
+          },
+          "baselines": {
+            "catboost": {
+              "rmse": 1.1320158932199476,
+              "mse": 1.2814599825025559,
+              "mae": 0.9266301984162658,
+              "r_auc_mse": 0.4534967842650068,
+              "mean_uncertainty": 0.7676860690555891,
+              "mean_epistemic": 0.07717052594135715,
+              "mean_aleatoric": 0.7635352018529097
+            }
+          },
+          "delta_vs_hmtl": {
+            "catboost": {
+              "delta_rmse": 0.39566060892863497,
+              "delta_r_auc_mse": 0.220789771923757
+            }
+          }
+        }
+      },
+      "status": "ok",
+      "aggregate_over_seeds": {
+        "n_requested": 1,
+        "n_successful": 1,
+        "failed_seeds": [],
+        "hmtl": {
+          "ensemble_avg_val_r_auc_mse": {
+            "mean": 0.28788456213039654,
+            "std": 0.0
+          },
+          "mae": {
+            "mean": 0.5817723041453192,
+            "std": 0.0
+          },
+          "mean_aleatoric": {
+            "mean": 0.7031647562980652,
+            "std": 0.0
+          },
+          "mean_epistemic": {
+            "mean": 0.3404894769191742,
+            "std": 0.0
+          },
+          "mean_uncertainty": {
+            "mean": 0.7840479016304016,
+            "std": 0.0
+          },
+          "mse": {
+            "mean": 0.5422191047037398,
+            "std": 0.0
+          },
+          "r_auc_mse": {
+            "mean": 0.23270701234124977,
+            "std": 0.0
+          },
+          "rmse": {
+            "mean": 0.7363552842913126,
+            "std": 0.0
+          }
+        },
+        "baselines": {
+          "catboost": {
+            "n_successful": 1,
+            "mae": {
+              "mean": 0.9266301984162658,
+              "std": 0.0
+            },
+            "mean_aleatoric": {
+              "mean": 0.7635352018529097,
+              "std": 0.0
+            },
+            "mean_epistemic": {
+              "mean": 0.07717052594135715,
+              "std": 0.0
+            },
+            "mean_uncertainty": {
+              "mean": 0.7676860690555891,
+              "std": 0.0
+            },
+            "mse": {
+              "mean": 1.2814599825025559,
+              "std": 0.0
+            },
+            "r_auc_mse": {
+              "mean": 0.4534967842650068,
+              "std": 0.0
+            },
+            "rmse": {
+              "mean": 1.1320158932199476,
+              "std": 0.0
+            }
+          }
+        },
+        "delta_vs_hmtl": {
+          "catboost": {
+            "n_successful": 1,
+            "delta_r_auc_mse": {
+              "mean": 0.220789771923757,
+              "std": 0.0
+            },
+            "delta_rmse": {
+              "mean": 0.39566060892863497,
+              "std": 0.0
+            }
+          }
+        }
+      },
+      "hmtl": {
+        "ensemble_avg_val_r_auc_mse": 0.28788456213039654,
+        "mae": 0.5817723041453192,
+        "mean_aleatoric": 0.7031647562980652,
+        "mean_epistemic": 0.3404894769191742,
+        "mean_uncertainty": 0.7840479016304016,
+        "mse": 0.5422191047037398,
+        "r_auc_mse": 0.23270701234124977,
+        "rmse": 0.7363552842913126
+      },
+      "baselines": {
+        "catboost": {
+          "mae": 0.9266301984162658,
+          "mean_aleatoric": 0.7635352018529097,
+          "mean_epistemic": 0.07717052594135715,
+          "mean_uncertainty": 0.7676860690555891,
+          "mse": 1.2814599825025559,
+          "r_auc_mse": 0.4534967842650068,
+          "rmse": 1.1320158932199476
+        }
+      },
+      "delta_vs_hmtl": {
+        "catboost": {
+          "delta_r_auc_mse": 0.220789771923757,
+          "delta_rmse": 0.39566060892863497
+        }
+      },
+      "catboost": {
+        "mae": 0.9266301984162658,
+        "mean_aleatoric": 0.7635352018529097,
+        "mean_epistemic": 0.07717052594135715,
+        "mean_uncertainty": 0.7676860690555891,
+        "mse": 1.2814599825025559,
+        "r_auc_mse": 0.4534967842650068,
+        "rmse": 1.1320158932199476
+      },
+      "delta_rmse": 0.39566060892863497,
+      "delta_r_auc_mse": 0.220789771923757
+    },
+    "80": {
+      "size_ratio": 0.8,
+      "n_train_samples": 153,
+      "per_seed": {
+        "42": {
+          "seed": 42,
+          "status": "ok",
+          "n_train_samples": 153,
+          "hmtl": {
+            "rmse": 0.5548606321589618,
+            "mse": 0.30787032111984264,
+            "mae": 0.4630454636325052,
+            "r_auc_mse": 0.1624233490732402,
+            "mean_uncertainty": 0.7904135584831238,
+            "mean_epistemic": 0.3679385483264923,
+            "mean_aleatoric": 0.6946277618408203,
+            "ensemble_avg_val_r_auc_mse": 0.22798928095892604
+          },
+          "baselines": {
+            "catboost": {
+              "rmse": 0.76646577737861,
+              "mse": 0.5874697878925969,
+              "mae": 0.6451567921169675,
+              "r_auc_mse": 0.25503811665530896,
+              "mean_uncertainty": 0.4929513620563313,
+              "mean_epistemic": 0.08927482656854095,
+              "mean_aleatoric": 0.4842896898145764
+            }
+          },
+          "delta_vs_hmtl": {
+            "catboost": {
+              "delta_rmse": 0.21160514521964824,
+              "delta_r_auc_mse": 0.09261476758206877
+            }
+          }
+        }
+      },
+      "status": "ok",
+      "aggregate_over_seeds": {
+        "n_requested": 1,
+        "n_successful": 1,
+        "failed_seeds": [],
+        "hmtl": {
+          "ensemble_avg_val_r_auc_mse": {
+            "mean": 0.22798928095892604,
+            "std": 0.0
+          },
+          "mae": {
+            "mean": 0.4630454636325052,
+            "std": 0.0
+          },
+          "mean_aleatoric": {
+            "mean": 0.6946277618408203,
+            "std": 0.0
+          },
+          "mean_epistemic": {
+            "mean": 0.3679385483264923,
+            "std": 0.0
+          },
+          "mean_uncertainty": {
+            "mean": 0.7904135584831238,
+            "std": 0.0
+          },
+          "mse": {
+            "mean": 0.30787032111984264,
+            "std": 0.0
+          },
+          "r_auc_mse": {
+            "mean": 0.1624233490732402,
+            "std": 0.0
+          },
+          "rmse": {
+            "mean": 0.5548606321589618,
+            "std": 0.0
+          }
+        },
+        "baselines": {
+          "catboost": {
+            "n_successful": 1,
+            "mae": {
+              "mean": 0.6451567921169675,
+              "std": 0.0
+            },
+            "mean_aleatoric": {
+              "mean": 0.4842896898145764,
+              "std": 0.0
+            },
+            "mean_epistemic": {
+              "mean": 0.08927482656854095,
+              "std": 0.0
+            },
+            "mean_uncertainty": {
+              "mean": 0.4929513620563313,
+              "std": 0.0
+            },
+            "mse": {
+              "mean": 0.5874697878925969,
+              "std": 0.0
+            },
+            "r_auc_mse": {
+              "mean": 0.25503811665530896,
+              "std": 0.0
+            },
+            "rmse": {
+              "mean": 0.76646577737861,
+              "std": 0.0
+            }
+          }
+        },
+        "delta_vs_hmtl": {
+          "catboost": {
+            "n_successful": 1,
+            "delta_r_auc_mse": {
+              "mean": 0.09261476758206877,
+              "std": 0.0
+            },
+            "delta_rmse": {
+              "mean": 0.21160514521964824,
+              "std": 0.0
+            }
+          }
+        }
+      },
+      "hmtl": {
+        "ensemble_avg_val_r_auc_mse": 0.22798928095892604,
+        "mae": 0.4630454636325052,
+        "mean_aleatoric": 0.6946277618408203,
+        "mean_epistemic": 0.3679385483264923,
+        "mean_uncertainty": 0.7904135584831238,
+        "mse": 0.30787032111984264,
+        "r_auc_mse": 0.1624233490732402,
+        "rmse": 0.5548606321589618
+      },
+      "baselines": {
+        "catboost": {
+          "mae": 0.6451567921169675,
+          "mean_aleatoric": 0.4842896898145764,
+          "mean_epistemic": 0.08927482656854095,
+          "mean_uncertainty": 0.4929513620563313,
+          "mse": 0.5874697878925969,
+          "r_auc_mse": 0.25503811665530896,
+          "rmse": 0.76646577737861
+        }
+      },
+      "delta_vs_hmtl": {
+        "catboost": {
+          "delta_r_auc_mse": 0.09261476758206877,
+          "delta_rmse": 0.21160514521964824
+        }
+      },
+      "catboost": {
+        "mae": 0.6451567921169675,
+        "mean_aleatoric": 0.4842896898145764,
+        "mean_epistemic": 0.08927482656854095,
+        "mean_uncertainty": 0.4929513620563313,
+        "mse": 0.5874697878925969,
+        "r_auc_mse": 0.25503811665530896,
+        "rmse": 0.76646577737861
+      },
+      "delta_rmse": 0.21160514521964824,
+      "delta_r_auc_mse": 0.09261476758206877
+    },
+    "100": {
+      "size_ratio": 1.0,
+      "n_train_samples": 192,
+      "per_seed": {
+        "42": {
+          "seed": 42,
+          "status": "ok",
+          "n_train_samples": 192,
+          "hmtl": {
+            "rmse": 0.4939570645303526,
+            "mse": 0.24399358159944293,
+            "mae": 0.4085406628055443,
+            "r_auc_mse": 0.09800538526321168,
+            "mean_uncertainty": 0.7956492304801941,
+            "mean_epistemic": 0.3883573114871979,
+            "mean_aleatoric": 0.687001645565033,
+            "ensemble_avg_val_r_auc_mse": 0.2490324226385241
+          },
+          "baselines": {
+            "catboost": {
+              "rmse": 0.7132287370796663,
+              "mse": 0.5086952313962557,
+              "mae": 0.6045813016251764,
+              "r_auc_mse": 0.23897384361210763,
+              "mean_uncertainty": 0.3972160720139047,
+              "mean_epistemic": 0.08747367648152038,
+              "mean_aleatoric": 0.386848524222459
+            }
+          },
+          "delta_vs_hmtl": {
+            "catboost": {
+              "delta_rmse": 0.21927167254931368,
+              "delta_r_auc_mse": 0.14096845834889596
+            }
+          }
+        }
+      },
+      "status": "ok",
+      "aggregate_over_seeds": {
+        "n_requested": 1,
+        "n_successful": 1,
+        "failed_seeds": [],
+        "hmtl": {
+          "ensemble_avg_val_r_auc_mse": {
+            "mean": 0.2490324226385241,
+            "std": 0.0
+          },
+          "mae": {
+            "mean": 0.4085406628055443,
+            "std": 0.0
+          },
+          "mean_aleatoric": {
+            "mean": 0.687001645565033,
+            "std": 0.0
+          },
+          "mean_epistemic": {
+            "mean": 0.3883573114871979,
+            "std": 0.0
+          },
+          "mean_uncertainty": {
+            "mean": 0.7956492304801941,
+            "std": 0.0
+          },
+          "mse": {
+            "mean": 0.24399358159944293,
+            "std": 0.0
+          },
+          "r_auc_mse": {
+            "mean": 0.09800538526321168,
+            "std": 0.0
+          },
+          "rmse": {
+            "mean": 0.4939570645303526,
+            "std": 0.0
+          }
+        },
+        "baselines": {
+          "catboost": {
+            "n_successful": 1,
+            "mae": {
+              "mean": 0.6045813016251764,
+              "std": 0.0
+            },
+            "mean_aleatoric": {
+              "mean": 0.386848524222459,
+              "std": 0.0
+            },
+            "mean_epistemic": {
+              "mean": 0.08747367648152038,
+              "std": 0.0
+            },
+            "mean_uncertainty": {
+              "mean": 0.3972160720139047,
+              "std": 0.0
+            },
+            "mse": {
+              "mean": 0.5086952313962557,
+              "std": 0.0
+            },
+            "r_auc_mse": {
+              "mean": 0.23897384361210763,
+              "std": 0.0
+            },
+            "rmse": {
+              "mean": 0.7132287370796663,
+              "std": 0.0
+            }
+          }
+        },
+        "delta_vs_hmtl": {
+          "catboost": {
+            "n_successful": 1,
+            "delta_r_auc_mse": {
+              "mean": 0.14096845834889596,
+              "std": 0.0
+            },
+            "delta_rmse": {
+              "mean": 0.21927167254931368,
+              "std": 0.0
+            }
+          }
+        }
+      },
+      "hmtl": {
+        "ensemble_avg_val_r_auc_mse": 0.2490324226385241,
+        "mae": 0.4085406628055443,
+        "mean_aleatoric": 0.687001645565033,
+        "mean_epistemic": 0.3883573114871979,
+        "mean_uncertainty": 0.7956492304801941,
+        "mse": 0.24399358159944293,
+        "r_auc_mse": 0.09800538526321168,
+        "rmse": 0.4939570645303526
+      },
+      "baselines": {
+        "catboost": {
+          "mae": 0.6045813016251764,
+          "mean_aleatoric": 0.386848524222459,
+          "mean_epistemic": 0.08747367648152038,
+          "mean_uncertainty": 0.3972160720139047,
+          "mse": 0.5086952313962557,
+          "r_auc_mse": 0.23897384361210763,
+          "rmse": 0.7132287370796663
+        }
+      },
+      "delta_vs_hmtl": {
+        "catboost": {
+          "delta_r_auc_mse": 0.14096845834889596,
+          "delta_rmse": 0.21927167254931368
+        }
+      },
+      "catboost": {
+        "mae": 0.6045813016251764,
+        "mean_aleatoric": 0.386848524222459,
+        "mean_epistemic": 0.08747367648152038,
+        "mean_uncertainty": 0.3972160720139047,
+        "mse": 0.5086952313962557,
+        "r_auc_mse": 0.23897384361210763,
+        "rmse": 0.7132287370796663
+      },
+      "delta_rmse": 0.21927167254931368,
+      "delta_r_auc_mse": 0.14096845834889596
+    }
+  }
+}
