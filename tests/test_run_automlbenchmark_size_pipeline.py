@@ -548,3 +548,121 @@ def test_run_automlbenchmark_experiments_parallel_future_failure(monkeypatch, tm
     assert results[1]["run_meta"]["sizes"] == [0.5]
     assert results[1]["run_meta"]["baselines"] == ["catboost"]
     assert "timestamp_utc" in results[1]["run_meta"]
+
+
+def test_run_automlbenchmark_experiments_parallel_keyboard_interrupt_forces_shutdown(
+    monkeypatch,
+    tmp_path: Path,
+):
+    model_cfg = tmp_path / "model.yaml"
+    train_cfg = tmp_path / "train.yaml"
+    ensemble_cfg = tmp_path / "ensemble.yaml"
+    data_cfg = tmp_path / "data.yaml"
+
+    model_cfg.write_text("{}", encoding="utf-8")
+    train_cfg.write_text("{}", encoding="utf-8")
+    ensemble_cfg.write_text("{}", encoding="utf-8")
+    data_cfg.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        size_script,
+        "get_regression_datasets",
+        lambda study_id: [
+            {"dataset_id": 301, "name": "dataset_a", "task_id": 21},
+            {"dataset_id": 302, "name": "dataset_b", "task_id": 22},
+        ],
+    )
+    monkeypatch.setattr(
+        size_script,
+        "run_single_dataset_experiment",
+        lambda **kwargs: {
+            "dataset_id": int(kwargs["dataset_meta"].dataset_id),
+            "dataset_name": kwargs["dataset_meta"].dataset_name,
+            "sizes": {},
+        },
+    )
+
+    captured: dict[str, object] = {}
+
+    class _FakeProcess:
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+            self.join_calls = 0
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def terminate(self):
+            self.terminated = True
+            self.alive = False
+
+        def kill(self):
+            self.killed = True
+            self.alive = False
+
+        def join(self, timeout=None):
+            self.join_calls += 1
+
+    class _FakeFuture:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class _FakeExecutor:
+        def __init__(self, *, max_workers, mp_context):
+            self._processes = {0: _FakeProcess(), 1: _FakeProcess()}
+            self.shutdown_calls: list[tuple[bool, bool | None]] = []
+            captured["executor"] = self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, **kwargs):
+            return _FakeFuture(fn(**kwargs))
+
+        def shutdown(self, wait=True, cancel_futures=None):
+            self.shutdown_calls.append((bool(wait), cancel_futures))
+
+    def fake_as_completed(future_to_dataset):
+        def _gen():
+            raise KeyboardInterrupt()
+            yield from future_to_dataset
+
+        return _gen()
+
+    monkeypatch.setattr(size_script.futures, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(size_script.futures, "as_completed", fake_as_completed)
+
+    with pytest.raises(KeyboardInterrupt):
+        size_script.run_automlbenchmark_experiments(
+            model_cfg_path=model_cfg,
+            train_cfg_path=train_cfg,
+            ensemble_cfg_path=ensemble_cfg,
+            data_cfg_path=data_cfg,
+            output_dir=tmp_path / "out",
+            sizes=[0.5],
+            dataset_id=None,
+            study_id=269,
+            seed=42,
+            seeds=None,
+            n_seeds=2,
+            max_datasets=None,
+            max_dataset_workers=2,
+            baselines=["catboost"],
+            train_ratio=0.8,
+            val_ratio=0.1,
+            test_ratio=0.1,
+            high_level_progress_only=True,
+        )
+
+    executor = captured["executor"]
+    assert isinstance(executor, _FakeExecutor)
+    assert (False, True) in executor.shutdown_calls
+    assert all(proc.terminated for proc in executor._processes.values())

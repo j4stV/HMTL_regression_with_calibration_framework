@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
+import time
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from typing import Tuple, Optional
 from pathlib import Path
+from http.client import IncompleteRead
 
 try:
     import openml
@@ -23,6 +26,70 @@ def _require_openml():
     if openml is None:
         raise ImportError("openml is not installed. Install with: pip install openml")
     return openml
+
+
+def _is_transient_openml_download_error(exc: Exception) -> bool:
+    """Return True if an OpenML download error is likely transient/network-related."""
+    if isinstance(exc, IncompleteRead):
+        return True
+
+    cursor: BaseException | None = exc
+    inspected: set[int] = set()
+    while cursor is not None and id(cursor) not in inspected:
+        inspected.add(id(cursor))
+        if isinstance(cursor, IncompleteRead):
+            return True
+        text = str(cursor)
+        if any(
+            marker in text
+            for marker in (
+                "IncompleteRead",
+                "Connection broken",
+                "Read timed out",
+                "ChunkedEncodingError",
+                "RemoteDisconnected",
+                "ConnectionResetError",
+                "ProtocolError",
+                "Temporary failure in name resolution",
+            )
+        ):
+            return True
+        cursor = cursor.__cause__ or cursor.__context__
+    return False
+
+
+def _load_openml_dataset_with_retry(dataset_id: int):
+    _require_openml()
+
+    retry_count = int(os.getenv("OPENML_DOWNLOAD_RETRIES", "3"))
+    base_backoff = float(os.getenv("OPENML_DOWNLOAD_RETRY_BACKOFF_SEC", "2.0"))
+    attempts = max(1, retry_count + 1)
+
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with log_timing(f"Loading dataset {dataset_id}", logger):
+                return openml.datasets.get_dataset(dataset_id, download_data=True)
+        except Exception as exc:
+            last_error = exc
+            should_retry = _is_transient_openml_download_error(exc) and attempt < attempts
+            if not should_retry:
+                raise
+            sleep_seconds = base_backoff * (2 ** (attempt - 1))
+            logger.warning(
+                "Transient OpenML download failure for dataset %d (attempt %d/%d): %s. "
+                "Retrying in %.1fs.",
+                dataset_id,
+                attempt,
+                attempts,
+                exc,
+                sleep_seconds,
+            )
+            time.sleep(sleep_seconds)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"Failed to load OpenML dataset {dataset_id} for unknown reasons")
 
 
 def get_regression_datasets(study_id: int = 269) -> list[dict]:
@@ -235,8 +302,7 @@ def load_dataset(
     _require_openml()
     
     try:
-        with log_timing(f"Loading dataset {dataset_id}", logger):
-            dataset = openml.datasets.get_dataset(dataset_id, download_data=True)
+        dataset = _load_openml_dataset_with_retry(dataset_id)
         logger.info(f"Dataset loaded: {dataset.name}")
         
         # Get data - check API compatibility

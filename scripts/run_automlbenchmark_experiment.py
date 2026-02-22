@@ -15,6 +15,7 @@ import multiprocessing
 import os
 import re
 import sys
+import time
 import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -764,6 +765,93 @@ def _accelerator_available() -> bool:
     return bool(mps_backend is not None and mps_backend.is_available())
 
 
+def _iter_executor_processes(executor: Any) -> list[Any]:
+    processes = getattr(executor, "_processes", None)
+    if isinstance(processes, dict):
+        return [proc for proc in processes.values() if proc is not None]
+    if isinstance(processes, (list, tuple, set)):
+        return [proc for proc in processes if proc is not None]
+    return []
+
+
+def _force_shutdown_process_pool(
+    *,
+    executor: futures.ProcessPoolExecutor,
+    logger: logging.Logger,
+    join_timeout: float = 2.0,
+) -> None:
+    """Terminate process-pool workers quickly after Ctrl+C."""
+    try:
+        executor.shutdown(wait=False, cancel_futures=True)
+    except TypeError:
+        # Python versions without cancel_futures still support non-blocking shutdown.
+        executor.shutdown(wait=False)
+    except Exception as exc:
+        logger.warning("Non-blocking pool shutdown failed: %s", exc)
+
+    processes = _iter_executor_processes(executor)
+    if not processes:
+        return
+
+    for proc in processes:
+        try:
+            if proc.is_alive():
+                proc.terminate()
+        except Exception:
+            continue
+
+    deadline = time.monotonic() + max(0.0, join_timeout)
+    for proc in processes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            proc.join(timeout=min(0.2, remaining))
+        except Exception:
+            continue
+
+    for proc in processes:
+        try:
+            if proc.is_alive() and hasattr(proc, "kill"):
+                proc.kill()
+        except Exception:
+            continue
+
+    for proc in processes:
+        try:
+            if proc.is_alive():
+                proc.join(timeout=0.1)
+        except Exception:
+            continue
+
+
+def _terminate_active_children(logger: logging.Logger) -> None:
+    children = multiprocessing.active_children()
+    if not children:
+        return
+
+    logger.warning("Terminating %d active child process(es)", len(children))
+    for proc in children:
+        try:
+            if proc.is_alive():
+                proc.terminate()
+        except Exception:
+            continue
+
+    for proc in children:
+        try:
+            proc.join(timeout=0.5)
+        except Exception:
+            continue
+
+    for proc in children:
+        try:
+            if proc.is_alive() and hasattr(proc, "kill"):
+                proc.kill()
+        except Exception:
+            continue
+
+
 def run_automlbenchmark_experiments(
     *,
     model_cfg_path: Path,
@@ -921,66 +1009,70 @@ def run_automlbenchmark_experiments(
                 mp_context=mp_context,
             ) as executor:
                 future_to_dataset: dict[futures.Future[dict[str, Any]], tuple[int, DatasetMeta]] = {}
-
-                for idx, dataset_meta in enumerate(datasets_meta):
-                    if not high_level_progress_only:
-                        logger.info(
-                            "Submitting dataset %d/%d (id=%d)",
-                            idx + 1,
-                            len(datasets_meta),
-                            dataset_meta.dataset_id,
-                        )
-                    future = executor.submit(
-                        run_single_dataset_experiment,
-                        dataset_meta=dataset_meta,
-                        sizes=sizes,
-                        seeds=seed_list,
-                        model_cfg=model_cfg,
-                        train_cfg_yaml=train_cfg_yaml,
-                        ensemble_cfg_yaml=ensemble_cfg_yaml,
-                        preprocess_config=preprocess_config,
-                        train_ratio=train_ratio,
-                        val_ratio=val_ratio,
-                        test_ratio=test_ratio,
-                        baselines=baselines,
-                        split_seed=seed,
-                        output_dir=output_dir,
-                        study_id=study_id,
-                        config_paths=config_paths,
-                        show_trial_progress=worker_show_trial_progress,
-                        show_inner_progress=not high_level_progress_only,
-                    )
-                    future_to_dataset[future] = (idx, dataset_meta)
-
-                for future in futures.as_completed(future_to_dataset):
-                    idx, dataset_meta = future_to_dataset[future]
-                    if high_level_progress_only:
-                        dataset_pbar.set_postfix_str(f"id={dataset_meta.dataset_id}")
-
-                    try:
-                        dataset_result = future.result()
-                    except Exception as exc:
-                        logger.error(
-                            "Dataset %d failed (%s): %s",
-                            dataset_meta.dataset_id,
-                            dataset_meta.dataset_name,
-                            exc,
-                        )
-                        dataset_result = _build_dataset_failure_result(
+                try:
+                    for idx, dataset_meta in enumerate(datasets_meta):
+                        if not high_level_progress_only:
+                            logger.info(
+                                "Submitting dataset %d/%d (id=%d)",
+                                idx + 1,
+                                len(datasets_meta),
+                                dataset_meta.dataset_id,
+                            )
+                        future = executor.submit(
+                            run_single_dataset_experiment,
                             dataset_meta=dataset_meta,
-                            exc=exc,
-                            study_id=study_id,
-                            seed_list=seed_list,
                             sizes=sizes,
+                            seeds=seed_list,
+                            model_cfg=model_cfg,
+                            train_cfg_yaml=train_cfg_yaml,
+                            ensemble_cfg_yaml=ensemble_cfg_yaml,
+                            preprocess_config=preprocess_config,
+                            train_ratio=train_ratio,
+                            val_ratio=val_ratio,
+                            test_ratio=test_ratio,
                             baselines=baselines,
+                            split_seed=seed,
+                            output_dir=output_dir,
+                            study_id=study_id,
+                            config_paths=config_paths,
+                            show_trial_progress=worker_show_trial_progress,
+                            show_inner_progress=not high_level_progress_only,
                         )
+                        future_to_dataset[future] = (idx, dataset_meta)
 
-                    aggregated_results_by_index[idx] = dataset_result
-                    _write_aggregated_results(
-                        aggregated_results_by_index=aggregated_results_by_index,
-                        aggregated_path=aggregated_path,
-                    )
-                    dataset_pbar.update(1)
+                    for future in futures.as_completed(future_to_dataset):
+                        idx, dataset_meta = future_to_dataset[future]
+                        if high_level_progress_only:
+                            dataset_pbar.set_postfix_str(f"id={dataset_meta.dataset_id}")
+
+                        try:
+                            dataset_result = future.result()
+                        except Exception as exc:
+                            logger.error(
+                                "Dataset %d failed (%s): %s",
+                                dataset_meta.dataset_id,
+                                dataset_meta.dataset_name,
+                                exc,
+                            )
+                            dataset_result = _build_dataset_failure_result(
+                                dataset_meta=dataset_meta,
+                                exc=exc,
+                                study_id=study_id,
+                                seed_list=seed_list,
+                                sizes=sizes,
+                                baselines=baselines,
+                            )
+
+                        aggregated_results_by_index[idx] = dataset_result
+                        _write_aggregated_results(
+                            aggregated_results_by_index=aggregated_results_by_index,
+                            aggregated_path=aggregated_path,
+                        )
+                        dataset_pbar.update(1)
+                except KeyboardInterrupt:
+                    logger.warning("Interrupted by user. Forcing shutdown of dataset workers.")
+                    _force_shutdown_process_pool(executor=executor, logger=logger)
+                    raise
 
     return [result for result in aggregated_results_by_index if result is not None]
 
@@ -1065,26 +1157,31 @@ def main() -> None:
 
     output_dir = Path(args.output)
 
-    results = run_automlbenchmark_experiments(
-        model_cfg_path=Path(args.model),
-        train_cfg_path=Path(args.train),
-        ensemble_cfg_path=Path(args.ensemble),
-        data_cfg_path=Path(args.data) if args.data else None,
-        output_dir=output_dir,
-        sizes=args.sizes,
-        dataset_id=args.dataset_id,
-        study_id=args.study_id,
-        seed=args.seed,
-        seeds=args.seeds,
-        n_seeds=args.n_seeds,
-        max_datasets=args.max_datasets,
-        max_dataset_workers=args.max_dataset_workers,
-        baselines=args.baselines,
-        train_ratio=args.train_ratio,
-        val_ratio=args.val_ratio,
-        test_ratio=args.test_ratio,
-        high_level_progress_only=args.high_level_progress_only,
-    )
+    try:
+        results = run_automlbenchmark_experiments(
+            model_cfg_path=Path(args.model),
+            train_cfg_path=Path(args.train),
+            ensemble_cfg_path=Path(args.ensemble),
+            data_cfg_path=Path(args.data) if args.data else None,
+            output_dir=output_dir,
+            sizes=args.sizes,
+            dataset_id=args.dataset_id,
+            study_id=args.study_id,
+            seed=args.seed,
+            seeds=args.seeds,
+            n_seeds=args.n_seeds,
+            max_datasets=args.max_datasets,
+            max_dataset_workers=args.max_dataset_workers,
+            baselines=args.baselines,
+            train_ratio=args.train_ratio,
+            val_ratio=args.val_ratio,
+            test_ratio=args.test_ratio,
+            high_level_progress_only=args.high_level_progress_only,
+        )
+    except KeyboardInterrupt:
+        logger.warning("Interrupted by user (Ctrl+C). Cleaning up child processes.")
+        _terminate_active_children(logger)
+        raise SystemExit(130)
 
     aggregated_path = output_dir / "aggregated_results.json"
     with open(aggregated_path, "w", encoding="utf-8") as file:
