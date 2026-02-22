@@ -913,6 +913,9 @@ def run_automlbenchmark_experiments(
                 dataset_pbar.update(1)
         else:
             mp_context = multiprocessing.get_context("spawn")
+            # Keep only the parent dataset-level progress bar in parallel mode.
+            # Multiple per-worker tqdm bars tend to corrupt/hide the global bar.
+            worker_show_trial_progress = False
             with futures.ProcessPoolExecutor(
                 max_workers=effective_workers,
                 mp_context=mp_context,
@@ -944,7 +947,7 @@ def run_automlbenchmark_experiments(
                         output_dir=output_dir,
                         study_id=study_id,
                         config_paths=config_paths,
-                        show_trial_progress=high_level_progress_only,
+                        show_trial_progress=worker_show_trial_progress,
                         show_inner_progress=not high_level_progress_only,
                     )
                     future_to_dataset[future] = (idx, dataset_meta)

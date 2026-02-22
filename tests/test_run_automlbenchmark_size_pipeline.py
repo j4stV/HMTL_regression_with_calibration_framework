@@ -418,13 +418,13 @@ def test_run_automlbenchmark_experiments_parallel_branch_and_ordering(monkeypatc
     submitted = captured["submitted"]
     assert isinstance(submitted, list)
     assert [item["dataset_id"] for item in submitted] == [101, 102]
-    assert all(item["show_trial_progress"] is True for item in submitted)
+    assert all(item["show_trial_progress"] is False for item in submitted)
     assert all(item["show_inner_progress"] is False for item in submitted)
 
     called_flags = captured["called_flags"]
     assert isinstance(called_flags, list)
     assert len(called_flags) == 2
-    assert all(item["show_trial_progress"] is True for item in called_flags)
+    assert all(item["show_trial_progress"] is False for item in called_flags)
     assert all(item["show_inner_progress"] is False for item in called_flags)
 
     # Completion is reversed, but final ordering must follow input dataset order.
