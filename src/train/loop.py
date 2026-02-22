@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Optional
 
@@ -31,6 +32,9 @@ class TrainConfig:
     seed: int | None = None
     task_type: str = "regression"  # NEW: "regression" or "classification"
     show_progress: bool = True
+    amp_enabled: bool = True
+    amp_dtype: str = "auto"  # "auto", "fp16", or "bf16"
+    amp_eval_enabled: bool = True
 
 
 def _is_mps_available() -> bool:
@@ -44,6 +48,72 @@ def _select_default_device() -> torch.device:
     if _is_mps_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+@dataclass(frozen=True)
+class _AmpState:
+    enabled: bool
+    dtype: torch.dtype | None
+    use_grad_scaler: bool
+    reason: str | None = None
+
+
+def _normalize_amp_dtype(amp_dtype: str) -> str:
+    normalized = str(amp_dtype).strip().lower()
+    if normalized not in {"auto", "fp16", "bf16"}:
+        raise ValueError(
+            f"Unsupported AMP dtype '{amp_dtype}'. Expected one of: auto, fp16, bf16."
+        )
+    return normalized
+
+
+def _resolve_amp_mode(device: torch.device, amp_enabled: bool, amp_dtype: str) -> _AmpState:
+    if not amp_enabled:
+        return _AmpState(
+            enabled=False,
+            dtype=None,
+            use_grad_scaler=False,
+            reason="AMP disabled in config",
+        )
+
+    if device.type != "cuda":
+        return _AmpState(
+            enabled=False,
+            dtype=None,
+            use_grad_scaler=False,
+            reason=f"AMP supports only CUDA; current device={device.type}",
+        )
+
+    requested_dtype = _normalize_amp_dtype(amp_dtype)
+    bf16_supported = bool(torch.cuda.is_bf16_supported())
+
+    if requested_dtype == "auto":
+        if bf16_supported:
+            return _AmpState(enabled=True, dtype=torch.bfloat16, use_grad_scaler=False)
+        return _AmpState(
+            enabled=True,
+            dtype=torch.float16,
+            use_grad_scaler=True,
+            reason="BF16 not supported on this CUDA device; falling back to FP16",
+        )
+
+    if requested_dtype == "bf16":
+        if bf16_supported:
+            return _AmpState(enabled=True, dtype=torch.bfloat16, use_grad_scaler=False)
+        return _AmpState(
+            enabled=True,
+            dtype=torch.float16,
+            use_grad_scaler=True,
+            reason="Requested BF16, but it is not supported; falling back to FP16",
+        )
+
+    return _AmpState(enabled=True, dtype=torch.float16, use_grad_scaler=True)
+
+
+def _autocast_if_needed(enabled: bool, dtype: torch.dtype | None):
+    if enabled and dtype is not None:
+        return torch.autocast(device_type="cuda", dtype=dtype)
+    return nullcontext()
 
 
 def compute_bins(y: np.ndarray, n_bins: int, use_rounding: bool = False) -> np.ndarray:
@@ -140,6 +210,33 @@ def train_model(
             logger.warning(f"  MPS available in PyTorch build: {mps_backend.is_built()}")
     model.to(device)
 
+    amp_state = _resolve_amp_mode(
+        device=device,
+        amp_enabled=cfg.amp_enabled,
+        amp_dtype=cfg.amp_dtype,
+    )
+    logger.info(
+        f"AMP requested: enabled={cfg.amp_enabled}, dtype={cfg.amp_dtype}, "
+        f"eval_enabled={cfg.amp_eval_enabled}"
+    )
+    logger.info(
+        f"AMP effective: enabled={amp_state.enabled}, dtype={amp_state.dtype}, "
+        f"grad_scaler={amp_state.use_grad_scaler}"
+    )
+    if amp_state.reason is not None:
+        if "falling back" in amp_state.reason.lower():
+            logger.warning(f"AMP note: {amp_state.reason}")
+        else:
+            logger.info(f"AMP note: {amp_state.reason}")
+    use_eval_amp = amp_state.enabled and cfg.amp_eval_enabled
+    logger.info(f"AMP eval effective: enabled={use_eval_amp}, dtype={amp_state.dtype}")
+
+    scaler = (
+        torch.cuda.amp.GradScaler(enabled=True)
+        if amp_state.use_grad_scaler
+        else None
+    )
+
     logger.debug(f"Training data shape: {X_tr.shape}, Validation data shape: {X_va.shape}")
     logger.debug(f"Training config: lr={cfg.lr}, epochs={cfg.epochs}, batch_size={cfg.batch_size}, patience={cfg.patience}, optimizer={cfg.optimizer}")
 
@@ -227,56 +324,62 @@ def train_model(
             yb = yb.to(device)
             yb_bin = yb_bin.to(device)
 
-            output = model(xb)
+            with _autocast_if_needed(enabled=amp_state.enabled, dtype=amp_state.dtype):
+                output = model(xb)
 
-            # Compute task loss based on task type
-            if cfg.task_type == "regression":
-                # Regression: use gaussian_nll
-                if len(output) == 2:
-                    # Single MLP or models without aux task
-                    mu, sigma = output
-                    loss = gaussian_nll(mu, sigma, yb, sigma_reg_weight=cfg.sigma_reg_weight)
-                else:
-                    # HMTL models with aux task
-                    mu, sigma, aux_output = output
-                    loss = gaussian_nll(mu, sigma, yb, sigma_reg_weight=cfg.sigma_reg_weight)
+                # Compute task loss based on task type
+                if cfg.task_type == "regression":
+                    # Regression: use gaussian_nll
+                    if len(output) == 2:
+                        # Single MLP or models without aux task
+                        mu, sigma = output
+                        loss = gaussian_nll(mu, sigma, yb, sigma_reg_weight=cfg.sigma_reg_weight)
+                    else:
+                        # HMTL models with aux task
+                        mu, sigma, aux_output = output
+                        loss = gaussian_nll(mu, sigma, yb, sigma_reg_weight=cfg.sigma_reg_weight)
 
-                    if aux_output is not None:
+                        if aux_output is not None:
+                            if aux_task == "bins":
+                                # Classification head
+                                loss = loss + cfg.aux_weight * ce(aux_output, yb_bin)
+                            elif aux_task == "contrastive":
+                                # Contrastive learning (temperature=0.5)
+                                aux_loss = n_pairs_loss(aux_output, yb_bin, temperature=0.5)
+                                loss = loss + cfg.aux_weight * aux_loss
+
+                else:  # classification
+                    # Classification: use task_loss or cross-entropy
+                    if len(output) == 2:
+                        # Model without aux task
+                        logits = output[0]
+                    else:
+                        # Model with aux task
+                        logits, _, aux_output = output
+
+                    if task_loss is not None:
+                        loss = task_loss(logits, yb)
+                    else:
+                        # Fallback to cross-entropy
+                        loss = ce(logits, yb)
+
+                    # Add auxiliary loss if available
+                    if len(output) == 3 and output[2] is not None:
+                        aux_output = output[2]
                         if aux_task == "bins":
-                            # Classification head
                             loss = loss + cfg.aux_weight * ce(aux_output, yb_bin)
                         elif aux_task == "contrastive":
-                            # Contrastive learning (temperature=0.5)
                             aux_loss = n_pairs_loss(aux_output, yb_bin, temperature=0.5)
                             loss = loss + cfg.aux_weight * aux_loss
-
-            else:  # classification
-                # Classification: use task_loss or cross-entropy
-                if len(output) == 2:
-                    # Model without aux task
-                    logits = output[0]
-                else:
-                    # Model with aux task
-                    logits, _, aux_output = output
-
-                if task_loss is not None:
-                    loss = task_loss(logits, yb)
-                else:
-                    # Fallback to cross-entropy
-                    loss = ce(logits, yb)
-
-                # Add auxiliary loss if available
-                if len(output) == 3 and output[2] is not None:
-                    aux_output = output[2]
-                    if aux_task == "bins":
-                        loss = loss + cfg.aux_weight * ce(aux_output, yb_bin)
-                    elif aux_task == "contrastive":
-                        aux_loss = n_pairs_loss(aux_output, yb_bin, temperature=0.5)
-                        loss = loss + cfg.aux_weight * aux_loss
             
             optim.zero_grad()
-            loss.backward()
-            optim.step()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(optim)
+                scaler.update()
+            else:
+                loss.backward()
+                optim.step()
             
             epoch_loss += loss.item()
             num_batches += 1
@@ -295,7 +398,8 @@ def train_model(
                 gts = []
                 for xb, yb in val_loader:
                     xb = xb.to(device)
-                    output = model(xb)
+                    with _autocast_if_needed(enabled=use_eval_amp, dtype=amp_state.dtype):
+                        output = model(xb)
                     # Handle different model types
                     if len(output) == 2:
                         mu, sigma = output
@@ -318,7 +422,8 @@ def train_model(
                 gts = []
                 for xb, yb in val_loader:
                     xb = xb.to(device)
-                    output = model(xb)
+                    with _autocast_if_needed(enabled=use_eval_amp, dtype=amp_state.dtype):
+                        output = model(xb)
                     if len(output) == 2:
                         logits = output[0]
                     else:

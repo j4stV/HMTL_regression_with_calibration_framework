@@ -216,6 +216,7 @@ def run_experiment(
         task_loss = None  # Will use default gaussian_nll
         task_metrics = None
 
+    amp_cfg = train_cfg.get("training", {}).get("amp", {})
     train_conf = TrainConfig(
         lr=float(train_cfg["optimizer"]["lr"]),
         epochs=int(train_cfg["training"]["epochs"]),
@@ -229,6 +230,9 @@ def run_experiment(
         sigma_reg_weight=float(train_cfg["training"].get("sigma_reg_weight", 0.01)),
         seed=int(train_cfg["training"].get("seed")) if train_cfg["training"].get("seed") else None,
         task_type=task_type,  # NEW
+        amp_enabled=bool(amp_cfg.get("enabled", True)),
+        amp_dtype=str(amp_cfg.get("dtype", "auto")),
+        amp_eval_enabled=bool(amp_cfg.get("eval_enabled", True)),
     )
 
     logger.info("Loading ensemble configuration...")
@@ -268,6 +272,8 @@ def run_experiment(
                 X_cal=X_cal,
                 y_cal=y_cal,
                 coverage_levels=[0.80, 0.90, 0.95],
+                amp_enabled=train_conf.amp_eval_enabled,
+                amp_dtype=train_conf.amp_dtype,
             )
 
             logger.info("Validation Metrics:")
@@ -297,6 +303,8 @@ def run_experiment(
                 coverage_levels=[0.80, 0.90, 0.95],
                 preprocessor=pre,
                 use_normalized_metrics=True,
+                amp_enabled=train_conf.amp_eval_enabled,
+                amp_dtype=train_conf.amp_dtype,
             )
 
             logger.info("Validation Metrics:")
@@ -328,6 +336,8 @@ def run_experiment(
                     X_cal=X_cal,
                     y_cal=y_cal,
                     coverage_levels=[0.80, 0.90, 0.95],
+                    amp_enabled=train_conf.amp_eval_enabled,
+                    amp_dtype=train_conf.amp_dtype,
                 )
 
                 logger.info("Test Metrics:")
@@ -359,6 +369,8 @@ def run_experiment(
                     coverage_levels=[0.80, 0.90, 0.95],
                     preprocessor=pre,
                     use_normalized_metrics=True,  # Compute metrics in standardized space (like baselines)
+                    amp_enabled=train_conf.amp_eval_enabled,
+                    amp_dtype=train_conf.amp_dtype,
                 )
 
                 logger.info("Test Metrics:")

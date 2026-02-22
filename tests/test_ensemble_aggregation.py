@@ -70,3 +70,20 @@ def test_ensemble_predict_positive_uncertainty(dummy_models):
     assert np.all(sigma_epistemic >= 0)
     assert np.all(sigma_aleatoric >= 0)
 
+
+def test_ensemble_predict_amp_cpu_noop(dummy_models):
+    """AMP flags on CPU should be a safe no-op and still return finite outputs."""
+    X = np.random.randn(12, 10).astype(np.float32)
+
+    mu_mean, sigma_total, sigma_epistemic, sigma_aleatoric = ensemble_predict(
+        dummy_models,
+        X,
+        device=torch.device("cpu"),
+        amp_enabled=True,
+        amp_dtype="auto",
+    )
+
+    assert np.all(np.isfinite(mu_mean))
+    assert np.all(np.isfinite(sigma_total))
+    assert np.all(np.isfinite(sigma_epistemic))
+    assert np.all(np.isfinite(sigma_aleatoric))

@@ -59,6 +59,8 @@ def evaluate_on_dataset(
     device: torch.device | None = None,
     preprocessor=None,
     use_normalized_metrics: bool = True,
+    amp_enabled: bool = False,
+    amp_dtype: str = "auto",
 ) -> EvaluationResults:
     """Comprehensive evaluation on a dataset.
     
@@ -73,6 +75,8 @@ def evaluate_on_dataset(
         preprocessor: Preprocessor for inverse transformation (if None, metrics computed in standardized space)
         use_normalized_metrics: If True, compute metrics in standardized space (like baselines). 
                                If False, transform predictions back to original space.
+        amp_enabled: Enable AMP for model inference on CUDA
+        amp_dtype: AMP dtype policy ("auto", "fp16", "bf16")
     
     Returns:
         EvaluationResults with all metrics and calibration results
@@ -83,10 +87,17 @@ def evaluate_on_dataset(
         device = _select_default_device()
     
     logger.info(f"Evaluating on {len(X)} samples with {len(models)} models")
+    logger.info(
+        f"Evaluation AMP request: enabled={amp_enabled}, dtype={amp_dtype}, device={device.type}"
+    )
     
     # Get ensemble predictions with uncertainty (in standardized space)
     y_pred, uncertainty_total, uncertainty_epistemic, uncertainty_aleatoric = ensemble_predict(
-        models, X, device=device
+        models,
+        X,
+        device=device,
+        amp_enabled=amp_enabled,
+        amp_dtype=amp_dtype,
     )
     
     # Store standardized values for potential use
@@ -165,7 +176,13 @@ def evaluate_on_dataset(
         logger.info("Performing conformal calibration")
         
         # Get predictions on calibration set
-        y_pred_cal, _, _, _ = ensemble_predict(models, X_cal, device=device)
+        y_pred_cal, _, _, _ = ensemble_predict(
+            models,
+            X_cal,
+            device=device,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+        )
         
         # Calibrate for multiple coverage levels
         conformal_results = calibrate_multiple_levels(
@@ -227,6 +244,8 @@ def evaluate_classification_on_dataset(
     y_cal: np.ndarray | None = None,
     coverage_levels: list[float] = [0.80, 0.90, 0.95],
     device: torch.device | None = None,
+    amp_enabled: bool = False,
+    amp_dtype: str = "auto",
 ) -> dict:
     """Comprehensive evaluation for classification.
 
@@ -238,6 +257,8 @@ def evaluate_classification_on_dataset(
         y_cal: Calibration labels (optional)
         coverage_levels: Desired coverage levels for conformal sets
         device: Device for inference
+        amp_enabled: Enable AMP for model inference on CUDA
+        amp_dtype: AMP dtype policy ("auto", "fp16", "bf16")
 
     Returns:
         Dictionary with evaluation results:
@@ -252,12 +273,21 @@ def evaluate_classification_on_dataset(
         device = _select_default_device()
 
     logger.info(f"Evaluating classification on {len(X)} samples with {len(models)} models")
+    logger.info(
+        f"Evaluation AMP request: enabled={amp_enabled}, dtype={amp_dtype}, device={device.type}"
+    )
 
     # Get ensemble predictions with uncertainty
     from src.eval.ensemble import ensemble_predict_classification
 
     logits_mean, probs_mean, uncertainty_total, uncertainty_epistemic, uncertainty_aleatoric = \
-        ensemble_predict_classification(models, X, device=device)
+        ensemble_predict_classification(
+            models,
+            X,
+            device=device,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+        )
 
     # Compute classification metrics
     from src.eval.classification_metrics import compute_classification_metrics
@@ -283,7 +313,13 @@ def evaluate_classification_on_dataset(
         logger.info("Performing conformal calibration for classification")
 
         # Get predictions on calibration set
-        _, probs_cal, _, _, _ = ensemble_predict_classification(models, X_cal, device=device)
+        _, probs_cal, _, _, _ = ensemble_predict_classification(
+            models,
+            X_cal,
+            device=device,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+        )
 
         # Calibrate for multiple coverage levels
         from src.eval.conformal import (

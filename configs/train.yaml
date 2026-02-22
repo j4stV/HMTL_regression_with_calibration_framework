@@ -10,6 +10,10 @@ training:
   epochs: 1000
   batch_size: 4096  # Increased to 4096  (reduce if OOM)
   sigma_reg_weight: 0.0  # Disabled
+  amp:
+    enabled: true
+    dtype: auto  # auto = bf16 if supported on CUDA, otherwise fp16
+    eval_enabled: true
   early_stop:
     metric: r_auc_mse
     patience: 15

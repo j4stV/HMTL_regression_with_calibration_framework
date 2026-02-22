@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import List, Tuple
 
 import numpy as np
@@ -23,10 +25,73 @@ def _select_default_device() -> torch.device:
     return torch.device("cpu")
 
 
+@dataclass(frozen=True)
+class _InferenceAmpState:
+    enabled: bool
+    dtype: torch.dtype | None
+    reason: str | None = None
+
+
+def _normalize_amp_dtype(amp_dtype: str) -> str:
+    normalized = str(amp_dtype).strip().lower()
+    if normalized not in {"auto", "fp16", "bf16"}:
+        raise ValueError(
+            f"Unsupported AMP dtype '{amp_dtype}'. Expected one of: auto, fp16, bf16."
+        )
+    return normalized
+
+
+def _resolve_inference_amp_mode(
+    device: torch.device,
+    amp_enabled: bool,
+    amp_dtype: str,
+) -> _InferenceAmpState:
+    if not amp_enabled:
+        return _InferenceAmpState(enabled=False, dtype=None, reason="AMP disabled by caller")
+
+    if device.type != "cuda":
+        return _InferenceAmpState(
+            enabled=False,
+            dtype=None,
+            reason=f"AMP supports only CUDA; current device={device.type}",
+        )
+
+    requested_dtype = _normalize_amp_dtype(amp_dtype)
+    bf16_supported = bool(torch.cuda.is_bf16_supported())
+
+    if requested_dtype == "auto":
+        if bf16_supported:
+            return _InferenceAmpState(enabled=True, dtype=torch.bfloat16)
+        return _InferenceAmpState(
+            enabled=True,
+            dtype=torch.float16,
+            reason="BF16 not supported on this CUDA device; falling back to FP16",
+        )
+
+    if requested_dtype == "bf16":
+        if bf16_supported:
+            return _InferenceAmpState(enabled=True, dtype=torch.bfloat16)
+        return _InferenceAmpState(
+            enabled=True,
+            dtype=torch.float16,
+            reason="Requested BF16, but it is not supported; falling back to FP16",
+        )
+
+    return _InferenceAmpState(enabled=True, dtype=torch.float16)
+
+
+def _autocast_if_needed(enabled: bool, dtype: torch.dtype | None):
+    if enabled and dtype is not None:
+        return torch.autocast(device_type="cuda", dtype=dtype)
+    return nullcontext()
+
+
 def ensemble_predict(
     models: List[HMTLModel],
     X: np.ndarray,
     device: torch.device | None = None,
+    amp_enabled: bool = False,
+    amp_dtype: str = "auto",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Predict using ensemble with proper uncertainty aggregation.
     
@@ -49,6 +114,21 @@ def ensemble_predict(
     
     if device is None:
         device = _select_default_device()
+
+    amp_state = _resolve_inference_amp_mode(
+        device=device,
+        amp_enabled=amp_enabled,
+        amp_dtype=amp_dtype,
+    )
+    logger.info(
+        f"Inference AMP requested: enabled={amp_enabled}, dtype={amp_dtype}. "
+        f"effective_enabled={amp_state.enabled}, effective_dtype={amp_state.dtype}"
+    )
+    if amp_state.reason is not None:
+        if "falling back" in amp_state.reason.lower():
+            logger.warning(f"Inference AMP note: {amp_state.reason}")
+        else:
+            logger.info(f"Inference AMP note: {amp_state.reason}")
     
     logger.debug(f"Ensemble prediction: {len(models)} models, {len(X)} samples")
     
@@ -60,7 +140,8 @@ def ensemble_predict(
         
         for i, model in enumerate(models):
             model.eval()
-            output = model(X_tensor)
+            with _autocast_if_needed(enabled=amp_state.enabled, dtype=amp_state.dtype):
+                output = model(X_tensor)
             # Handle different model types
             if len(output) == 2:
                 # Single MLP or models without aux task
@@ -114,9 +195,17 @@ def ensemble_predict_mean(
     models: List[HMTLModel],
     X: np.ndarray,
     device: torch.device | None = None,
+    amp_enabled: bool = False,
+    amp_dtype: str = "auto",
 ) -> np.ndarray:
     """Simple mean prediction (backward compatibility)."""
-    mu_mean, _, _, _ = ensemble_predict(models, X, device)
+    mu_mean, _, _, _ = ensemble_predict(
+        models,
+        X,
+        device,
+        amp_enabled=amp_enabled,
+        amp_dtype=amp_dtype,
+    )
     return mu_mean
 
 
@@ -156,6 +245,8 @@ def ensemble_predict_classification(
     models: List[HMTLModel],
     X: np.ndarray,
     device: torch.device | None = None,
+    amp_enabled: bool = False,
+    amp_dtype: str = "auto",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Predict using ensemble for classification with uncertainty decomposition.
 
@@ -184,6 +275,21 @@ def ensemble_predict_classification(
     if device is None:
         device = _select_default_device()
 
+    amp_state = _resolve_inference_amp_mode(
+        device=device,
+        amp_enabled=amp_enabled,
+        amp_dtype=amp_dtype,
+    )
+    logger.info(
+        f"Inference AMP requested: enabled={amp_enabled}, dtype={amp_dtype}. "
+        f"effective_enabled={amp_state.enabled}, effective_dtype={amp_state.dtype}"
+    )
+    if amp_state.reason is not None:
+        if "falling back" in amp_state.reason.lower():
+            logger.warning(f"Inference AMP note: {amp_state.reason}")
+        else:
+            logger.info(f"Inference AMP note: {amp_state.reason}")
+
     logger.debug(f"Ensemble classification prediction: {len(models)} models, {len(X)} samples")
 
     logits_list = []
@@ -194,7 +300,8 @@ def ensemble_predict_classification(
 
         for model in models:
             model.eval()
-            output = model(X_tensor)
+            with _autocast_if_needed(enabled=amp_state.enabled, dtype=amp_state.dtype):
+                output = model(X_tensor)
 
             # Handle different model output types
             if len(output) == 2:

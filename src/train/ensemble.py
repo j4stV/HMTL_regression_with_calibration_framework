@@ -129,6 +129,9 @@ def fit_ensemble(
                 seed=model_seed,
                 task_type=train_cfg.task_type,
                 show_progress=train_cfg.show_progress,
+                amp_enabled=train_cfg.amp_enabled,
+                amp_dtype=train_cfg.amp_dtype,
+                amp_eval_enabled=train_cfg.amp_eval_enabled,
             )
             
             # Sample indices based on bagging strategy
