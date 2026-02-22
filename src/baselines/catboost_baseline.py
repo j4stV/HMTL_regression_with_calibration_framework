@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from typing import Any
 
 try:
     from catboost import CatBoostError, CatBoostRegressor
@@ -66,6 +67,59 @@ class CatBoostBaseline:
         if task_type == "GPU" and self.gpu_devices:
             params["devices"] = self.gpu_devices
         return CatBoostRegressor(**params)
+
+    @staticmethod
+    def _is_not_enough_trees_error(exc: Exception) -> bool:
+        return "Not enough trees in model for" in str(exc)
+
+    def _infer_virtual_ensembles_cap(self, model: Any) -> int:
+        caps: list[int] = [max(1, int(self.n_models))]
+
+        tree_count = getattr(model, "tree_count_", None)
+        if tree_count is not None:
+            try:
+                tree_count_int = int(tree_count)
+            except (TypeError, ValueError):
+                tree_count_int = 0
+            if tree_count_int > 0:
+                caps.append(tree_count_int)
+
+        get_tree_count = getattr(model, "get_tree_count", None)
+        if callable(get_tree_count):
+            try:
+                method_tree_count = int(get_tree_count())
+            except Exception:
+                method_tree_count = 0
+            if method_tree_count > 0:
+                caps.append(method_tree_count)
+
+        get_best_iteration = getattr(model, "get_best_iteration", None)
+        if callable(get_best_iteration):
+            try:
+                best_iteration = int(get_best_iteration())
+            except Exception:
+                best_iteration = -1
+            if best_iteration >= 0:
+                caps.append(best_iteration + 1)
+
+        return max(1, min(caps))
+
+    def _predict_with_virtual_ensembles_backoff(self, model: Any, X_df: pd.DataFrame) -> np.ndarray:
+        max_virtual_ensembles = self._infer_virtual_ensembles_cap(model)
+
+        for virtual_ensembles_count in range(max_virtual_ensembles, 0, -1):
+            try:
+                return model.virtual_ensembles_predict(
+                    X_df,
+                    prediction_type="TotalUncertainty",
+                    virtual_ensembles_count=virtual_ensembles_count,
+                )
+            except CatBoostError as exc:
+                if self._is_not_enough_trees_error(exc) and virtual_ensembles_count > 1:
+                    continue
+                raise
+
+        raise RuntimeError("Failed to produce CatBoost virtual ensemble predictions")
     
     def fit(self, X: np.ndarray, y: np.ndarray, X_val: np.ndarray | None = None, y_val: np.ndarray | None = None) -> None:
         """Train ensemble of CatBoost models with proper uncertainty estimation."""
@@ -143,38 +197,52 @@ class CatBoostBaseline:
             raise ValueError("Models not trained. Call fit() first.")
         
         X_df = pd.DataFrame(X, columns=[f"feature_{j}" for j in range(X.shape[1])])
+        n_samples = X_df.shape[0]
         
         # Collect predictions from all models
         all_means = []
         all_knowledge = []
         all_data = []
         
-        for model in self.models:
-            # `virtual_ensembles_predict` requires enough trained trees.
-            # With early stopping, tree count can be lower than requested
-            # virtual ensembles count, so cap it per model.
-            tree_count = int(getattr(model, "tree_count_", 0) or 0)
-            virtual_ensembles_count = max(1, min(self.n_models, tree_count)) if tree_count > 0 else 1
+        for model_idx, model in enumerate(self.models, start=1):
+            try:
+                preds = self._predict_with_virtual_ensembles_backoff(model, X_df)
+            except CatBoostError as exc:
+                if self._is_not_enough_trees_error(exc):
+                    self.logger.warning(
+                        "CatBoost model %d: virtual_ensembles_predict failed (%s). "
+                        "Falling back to deterministic prediction with zero uncertainty.",
+                        model_idx,
+                        exc,
+                    )
+                    raw_preds = np.asarray(model.predict(X_df), dtype=float)
+                    if raw_preds.ndim == 2 and raw_preds.shape[1] >= 1:
+                        mean_preds = raw_preds[:, 0]
+                    else:
+                        mean_preds = raw_preds.reshape(-1)
+                    knowledge = np.zeros(n_samples, dtype=float)
+                    data = np.zeros(n_samples, dtype=float)
+                    all_means.append(mean_preds)
+                    all_knowledge.append(knowledge)
+                    all_data.append(data)
+                    continue
+                raise
 
-            # Use virtual_ensembles_predict with TotalUncertainty
-            # Returns [mean, knowledge_uncertainty, data_uncertainty] for each sample
-            preds = model.virtual_ensembles_predict(
-                X_df,
-                prediction_type='TotalUncertainty',
-                virtual_ensembles_count=virtual_ensembles_count,
-            )
-            
-            
             if preds.ndim == 2 and preds.shape[1] == 3:
-                mean_preds = preds[:, 0]  # Mean values
-                knowledge = preds[:, 1]   # Knowledge uncertainty (epistemic)
-                data = preds[:, 2]        # Data uncertainty (aleatoric)
+                mean_preds = preds[:, 0]
+                knowledge = preds[:, 1]
+                data = preds[:, 2]
             else:
-                # Fallback: try to extract from different format
-                self.logger.warning(f"Unexpected prediction shape: {preds.shape}, using fallback")
-                mean_preds = 0
-                knowledge = 0
-                data = 0
+                self.logger.warning("Unexpected prediction shape: %s, using zero uncertainty fallback", preds.shape)
+                preds_arr = np.asarray(preds, dtype=float)
+                if preds_arr.ndim == 1:
+                    mean_preds = preds_arr
+                elif preds_arr.ndim == 2 and preds_arr.shape[1] >= 1:
+                    mean_preds = preds_arr[:, 0]
+                else:
+                    mean_preds = np.zeros(n_samples, dtype=float)
+                knowledge = np.zeros(n_samples, dtype=float)
+                data = np.zeros(n_samples, dtype=float)
             
             all_means.append(mean_preds)
             all_knowledge.append(knowledge)
