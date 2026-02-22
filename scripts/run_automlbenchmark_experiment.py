@@ -8,8 +8,10 @@ and multiple seeds while avoiding preprocessing leakage.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as futures
 import json
 import logging
+import multiprocessing
 import os
 import re
 import sys
@@ -715,6 +717,53 @@ def run_single_dataset_experiment(
     return result
 
 
+def _build_dataset_failure_result(
+    *,
+    dataset_meta: DatasetMeta,
+    exc: Exception,
+    study_id: int,
+    seed_list: list[int],
+    sizes: list[float],
+    baselines: list[str],
+) -> dict[str, Any]:
+    return {
+        "dataset_id": int(dataset_meta.dataset_id),
+        "dataset_name": dataset_meta.dataset_name,
+        "task_id": dataset_meta.task_id,
+        "error": str(exc),
+        "run_meta": {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "study_id": int(study_id),
+            "seed_list": [int(s) for s in seed_list],
+            "sizes": [float(s) for s in sizes],
+            "baselines": baselines,
+        },
+    }
+
+
+def _write_aggregated_results(
+    *,
+    aggregated_results_by_index: list[dict[str, Any] | None],
+    aggregated_path: Path,
+) -> None:
+    ordered_completed_results = [result for result in aggregated_results_by_index if result is not None]
+    with open(aggregated_path, "w", encoding="utf-8") as file:
+        json.dump(ordered_completed_results, file, indent=2)
+
+
+def _accelerator_available() -> bool:
+    try:
+        import torch  # type: ignore
+    except Exception:
+        return False
+
+    if bool(torch.cuda.is_available()):
+        return True
+
+    mps_backend = getattr(torch.backends, "mps", None)
+    return bool(mps_backend is not None and mps_backend.is_available())
+
+
 def run_automlbenchmark_experiments(
     *,
     model_cfg_path: Path,
@@ -729,6 +778,7 @@ def run_automlbenchmark_experiments(
     seeds: list[int] | None,
     n_seeds: int,
     max_datasets: int | None,
+    max_dataset_workers: int = 1,
     baselines: list[str],
     train_ratio: float,
     val_ratio: float,
@@ -748,6 +798,9 @@ def run_automlbenchmark_experiments(
 
     if not np.isclose(train_ratio + val_ratio + test_ratio, 1.0):
         raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
+
+    if max_dataset_workers < 1:
+        raise ValueError("max_dataset_workers must be >= 1")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -778,7 +831,19 @@ def run_automlbenchmark_experiments(
     if max_datasets is not None:
         datasets_meta = datasets_meta[:max_datasets]
 
+    effective_workers = min(max_dataset_workers, len(datasets_meta))
+
     logger.info("Processing %d datasets", len(datasets_meta))
+    logger.info(
+        "Dataset workers: requested=%d effective=%d",
+        max_dataset_workers,
+        effective_workers,
+    )
+    if max_dataset_workers > 1 and _accelerator_available():
+        logger.warning(
+            "Parallel dataset workers requested while CUDA/MPS is available. "
+            "This may cause accelerator memory contention or OOM."
+        )
 
     config_paths = {
         "model": str(model_cfg_path),
@@ -787,7 +852,8 @@ def run_automlbenchmark_experiments(
         "data": str(data_cfg_path) if data_cfg_path else "",
     }
 
-    aggregated_results: list[dict[str, Any]] = []
+    aggregated_results_by_index: list[dict[str, Any] | None] = [None] * len(datasets_meta)
+    aggregated_path = output_dir / "aggregated_results.json"
 
     with tqdm(
         total=len(datasets_meta),
@@ -796,63 +862,124 @@ def run_automlbenchmark_experiments(
         leave=True,
         disable=not high_level_progress_only,
     ) as dataset_pbar:
-        for idx, dataset_meta in enumerate(datasets_meta, start=1):
-            if high_level_progress_only:
-                dataset_pbar.set_postfix_str(f"id={dataset_meta.dataset_id}")
-            else:
-                logger.info("\nDataset %d/%d", idx, len(datasets_meta))
+        if effective_workers <= 1 or len(datasets_meta) <= 1:
+            for idx, dataset_meta in enumerate(datasets_meta, start=1):
+                if high_level_progress_only:
+                    dataset_pbar.set_postfix_str(f"id={dataset_meta.dataset_id}")
+                else:
+                    logger.info("\nDataset %d/%d", idx, len(datasets_meta))
 
-            try:
-                dataset_result = run_single_dataset_experiment(
-                    dataset_meta=dataset_meta,
-                    sizes=sizes,
-                    seeds=seed_list,
-                    model_cfg=model_cfg,
-                    train_cfg_yaml=train_cfg_yaml,
-                    ensemble_cfg_yaml=ensemble_cfg_yaml,
-                    preprocess_config=preprocess_config,
-                    train_ratio=train_ratio,
-                    val_ratio=val_ratio,
-                    test_ratio=test_ratio,
-                    baselines=baselines,
-                    split_seed=seed,
-                    output_dir=output_dir,
-                    study_id=study_id,
-                    config_paths=config_paths,
-                    show_trial_progress=high_level_progress_only,
-                    show_inner_progress=not high_level_progress_only,
+                try:
+                    dataset_result = run_single_dataset_experiment(
+                        dataset_meta=dataset_meta,
+                        sizes=sizes,
+                        seeds=seed_list,
+                        model_cfg=model_cfg,
+                        train_cfg_yaml=train_cfg_yaml,
+                        ensemble_cfg_yaml=ensemble_cfg_yaml,
+                        preprocess_config=preprocess_config,
+                        train_ratio=train_ratio,
+                        val_ratio=val_ratio,
+                        test_ratio=test_ratio,
+                        baselines=baselines,
+                        split_seed=seed,
+                        output_dir=output_dir,
+                        study_id=study_id,
+                        config_paths=config_paths,
+                        show_trial_progress=high_level_progress_only,
+                        show_inner_progress=not high_level_progress_only,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Dataset %d failed (%s): %s",
+                        dataset_meta.dataset_id,
+                        dataset_meta.dataset_name,
+                        exc,
+                    )
+                    dataset_result = _build_dataset_failure_result(
+                        dataset_meta=dataset_meta,
+                        exc=exc,
+                        study_id=study_id,
+                        seed_list=seed_list,
+                        sizes=sizes,
+                        baselines=baselines,
+                    )
+
+                aggregated_results_by_index[idx - 1] = dataset_result
+                _write_aggregated_results(
+                    aggregated_results_by_index=aggregated_results_by_index,
+                    aggregated_path=aggregated_path,
                 )
-                aggregated_results.append(dataset_result)
-            except Exception as exc:
-                logger.error(
-                    "Dataset %d failed (%s): %s",
-                    dataset_meta.dataset_id,
-                    dataset_meta.dataset_name,
-                    exc,
-                )
-                aggregated_results.append(
-                    {
-                        "dataset_id": int(dataset_meta.dataset_id),
-                        "dataset_name": dataset_meta.dataset_name,
-                        "task_id": dataset_meta.task_id,
-                        "error": str(exc),
-                        "run_meta": {
-                            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                            "study_id": int(study_id),
-                            "seed_list": [int(s) for s in seed_list],
-                            "sizes": [float(s) for s in sizes],
-                            "baselines": baselines,
-                        },
-                    }
-                )
+                dataset_pbar.update(1)
+        else:
+            mp_context = multiprocessing.get_context("spawn")
+            with futures.ProcessPoolExecutor(
+                max_workers=effective_workers,
+                mp_context=mp_context,
+            ) as executor:
+                future_to_dataset: dict[futures.Future[dict[str, Any]], tuple[int, DatasetMeta]] = {}
 
-            aggregated_path = output_dir / "aggregated_results.json"
-            with open(aggregated_path, "w", encoding="utf-8") as file:
-                json.dump(aggregated_results, file, indent=2)
+                for idx, dataset_meta in enumerate(datasets_meta):
+                    if not high_level_progress_only:
+                        logger.info(
+                            "Submitting dataset %d/%d (id=%d)",
+                            idx + 1,
+                            len(datasets_meta),
+                            dataset_meta.dataset_id,
+                        )
+                    future = executor.submit(
+                        run_single_dataset_experiment,
+                        dataset_meta=dataset_meta,
+                        sizes=sizes,
+                        seeds=seed_list,
+                        model_cfg=model_cfg,
+                        train_cfg_yaml=train_cfg_yaml,
+                        ensemble_cfg_yaml=ensemble_cfg_yaml,
+                        preprocess_config=preprocess_config,
+                        train_ratio=train_ratio,
+                        val_ratio=val_ratio,
+                        test_ratio=test_ratio,
+                        baselines=baselines,
+                        split_seed=seed,
+                        output_dir=output_dir,
+                        study_id=study_id,
+                        config_paths=config_paths,
+                        show_trial_progress=high_level_progress_only,
+                        show_inner_progress=not high_level_progress_only,
+                    )
+                    future_to_dataset[future] = (idx, dataset_meta)
 
-            dataset_pbar.update(1)
+                for future in futures.as_completed(future_to_dataset):
+                    idx, dataset_meta = future_to_dataset[future]
+                    if high_level_progress_only:
+                        dataset_pbar.set_postfix_str(f"id={dataset_meta.dataset_id}")
 
-    return aggregated_results
+                    try:
+                        dataset_result = future.result()
+                    except Exception as exc:
+                        logger.error(
+                            "Dataset %d failed (%s): %s",
+                            dataset_meta.dataset_id,
+                            dataset_meta.dataset_name,
+                            exc,
+                        )
+                        dataset_result = _build_dataset_failure_result(
+                            dataset_meta=dataset_meta,
+                            exc=exc,
+                            study_id=study_id,
+                            seed_list=seed_list,
+                            sizes=sizes,
+                            baselines=baselines,
+                        )
+
+                    aggregated_results_by_index[idx] = dataset_result
+                    _write_aggregated_results(
+                        aggregated_results_by_index=aggregated_results_by_index,
+                        aggregated_path=aggregated_path,
+                    )
+                    dataset_pbar.update(1)
+
+    return [result for result in aggregated_results_by_index if result is not None]
 
 
 def main() -> None:
@@ -890,6 +1017,14 @@ def main() -> None:
         help="Number of seeds (when --seeds not provided)",
     )
     parser.add_argument("--max-datasets", type=int, default=None, help="Limit number of datasets")
+    parser.add_argument(
+        "--max-dataset-workers",
+        "--max_dataset_workers",
+        dest="max_dataset_workers",
+        type=int,
+        default=1,
+        help="Maximum number of datasets to process in parallel (default: 1)",
+    )
     parser.add_argument(
         "--baselines",
         nargs="+",
@@ -940,6 +1075,7 @@ def main() -> None:
         seeds=args.seeds,
         n_seeds=args.n_seeds,
         max_datasets=args.max_datasets,
+        max_dataset_workers=args.max_dataset_workers,
         baselines=args.baselines,
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
