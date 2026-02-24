@@ -35,6 +35,8 @@ class TrainConfig:
     amp_enabled: bool = True
     amp_dtype: str = "auto"  # "auto", "fp16", or "bf16"
     amp_eval_enabled: bool = True
+    early_stop_metric: str = "hybrid_rmse_rauc"  # "hybrid_rmse_rauc", "rmse", or "r_auc_mse"
+    hybrid_r_auc_weight: float = 0.25
 
 
 def _is_mps_available() -> bool:
@@ -148,6 +150,40 @@ def _autocast_if_needed(enabled: bool, dtype: torch.dtype | None):
     if enabled and dtype is not None:
         return torch.autocast(device_type="cuda", dtype=dtype)
     return nullcontext()
+
+
+def _normalize_regression_early_stop_metric(metric_name: str) -> str:
+    normalized = str(metric_name).strip().lower()
+    aliases = {
+        "hybrid": "hybrid_rmse_rauc",
+        "hybrid_rmse_rauc": "hybrid_rmse_rauc",
+        "hybrid_rmse_r_auc": "hybrid_rmse_rauc",
+        "rmse_plus_r_auc": "hybrid_rmse_rauc",
+        "rmse_plus_rauc": "hybrid_rmse_rauc",
+        "rmse": "rmse",
+        "r_auc_mse": "r_auc_mse",
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            "Unsupported regression early-stop metric "
+            f"'{metric_name}'. Expected one of: hybrid_rmse_rauc, rmse, r_auc_mse."
+        )
+    return aliases[normalized]
+
+
+def _resolve_regression_validation_score(
+    *,
+    metric_name: str,
+    rmse: float,
+    r_auc_mse_score: float,
+    hybrid_r_auc_weight: float,
+) -> float:
+    normalized = _normalize_regression_early_stop_metric(metric_name)
+    if normalized == "rmse":
+        return float(rmse)
+    if normalized == "r_auc_mse":
+        return float(r_auc_mse_score)
+    return float(rmse + hybrid_r_auc_weight * r_auc_mse_score)
 
 
 def compute_bins(y: np.ndarray, n_bins: int, use_rounding: bool = False) -> np.ndarray:
@@ -264,6 +300,13 @@ def train_model(
             logger.info(f"AMP note: {amp_state.reason}")
     use_eval_amp = amp_state.enabled and cfg.amp_eval_enabled
     logger.info(f"AMP eval effective: enabled={use_eval_amp}, dtype={amp_state.dtype}")
+    if cfg.task_type == "regression":
+        normalized_metric = _normalize_regression_early_stop_metric(cfg.early_stop_metric)
+        logger.info(
+            "Regression early-stop metric: %s (hybrid_r_auc_weight=%.4f)",
+            normalized_metric,
+            cfg.hybrid_r_auc_weight,
+        )
 
     scaler = (
         torch.cuda.amp.GradScaler(enabled=True)
@@ -448,7 +491,13 @@ def train_model(
                 mse = float(np.mean((y_true - y_pred) ** 2))
                 rmse = float(np.sqrt(mse))
                 mae = float(np.mean(np.abs(y_true - y_pred)))
-                score = r_auc_mse((y_true - y_pred) ** 2, y_sigma)
+                val_r_auc_mse = float(r_auc_mse((y_true - y_pred) ** 2, y_sigma))
+                score = _resolve_regression_validation_score(
+                    metric_name=cfg.early_stop_metric,
+                    rmse=rmse,
+                    r_auc_mse_score=val_r_auc_mse,
+                    hybrid_r_auc_weight=float(cfg.hybrid_r_auc_weight),
+                )
 
             else:  # classification
                 # Classification validation
@@ -480,6 +529,7 @@ def train_model(
                 score = nll
                 rmse = 0.0  # Not applicable for classification
                 mae = 0.0  # Not applicable for classification
+                val_r_auc_mse = 0.0
 
         # Update progress bar with metrics
         epoch_pbar.set_postfix({
@@ -509,7 +559,9 @@ def train_model(
                 history.append({
                     "epoch": epoch,
                     "train_loss": float(avg_train_loss),
-                    "val_r_auc_mse": float(score),
+                    "val_score": float(score),
+                    "val_metric": _normalize_regression_early_stop_metric(cfg.early_stop_metric),
+                    "val_r_auc_mse": float(val_r_auc_mse),
                     "val_rmse": float(rmse),
                     "val_mae": float(mae),
                 })

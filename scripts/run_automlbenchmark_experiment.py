@@ -8,6 +8,7 @@ and multiple seeds while avoiding preprocessing leakage.
 from __future__ import annotations
 
 import argparse
+import copy
 import concurrent.futures as futures
 import json
 import logging
@@ -128,6 +129,234 @@ def _build_preprocess_config(data_cfg: dict[str, Any] | None) -> PreprocessConfi
         pca_n_components=preprocess_cfg.get("pca", {}).get("n_components", None),
         target_standardize=bool(preprocess_cfg.get("target_standardize", True)),
     )
+
+
+def _normalize_early_stop_metric_name(metric_name: str) -> str:
+    normalized = str(metric_name).strip().lower()
+    aliases = {
+        "hybrid": "hybrid_rmse_rauc",
+        "hybrid_rmse_rauc": "hybrid_rmse_rauc",
+        "hybrid_rmse_r_auc": "hybrid_rmse_rauc",
+        "rmse_plus_r_auc": "hybrid_rmse_rauc",
+        "rmse_plus_rauc": "hybrid_rmse_rauc",
+        "rmse": "rmse",
+        "r_auc_mse": "r_auc_mse",
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            "Unsupported regression early-stop metric "
+            f"'{metric_name}'. Expected one of: hybrid_rmse_rauc, rmse, r_auc_mse."
+        )
+    return aliases[normalized]
+
+
+def _resolve_regression_early_stop_settings(train_cfg_yaml: dict[str, Any]) -> tuple[str, float]:
+    early_stop_cfg = train_cfg_yaml.get("training", {}).get("early_stop", {})
+    metric = _normalize_early_stop_metric_name(early_stop_cfg.get("metric", "hybrid_rmse_rauc"))
+    hybrid_weight = float(early_stop_cfg.get("hybrid_r_auc_weight", 0.25))
+    return metric, hybrid_weight
+
+
+def _estimate_n_train_samples(n_train_full: int, size_ratio: float) -> int:
+    if size_ratio >= 1.0:
+        return int(n_train_full)
+    return int(max(1, int(n_train_full * size_ratio)))
+
+
+def _determine_size_regime(n_train_size: int) -> str:
+    if n_train_size < 256:
+        return "tiny"
+    if n_train_size < 2048:
+        return "small"
+    return "large"
+
+
+def _preprocess_config_to_dict(cfg: PreprocessConfig) -> dict[str, Any]:
+    return {
+        "impute_const": float(cfg.impute_const),
+        "use_dynamic_binning": bool(cfg.use_dynamic_binning),
+        "quantile_binning_enabled": bool(cfg.quantile_binning_enabled),
+        "quantile_binning_bins": int(cfg.quantile_binning_bins),
+        "standardize": bool(cfg.standardize),
+        "pca_enabled": bool(cfg.pca_enabled),
+        "pca_n_components": cfg.pca_n_components,
+        "target_standardize": bool(cfg.target_standardize),
+    }
+
+
+def _build_effective_size_configs(
+    *,
+    base_model_cfg: dict[str, Any],
+    base_train_cfg_yaml: dict[str, Any],
+    base_ensemble_cfg_yaml: dict[str, Any],
+    base_preprocess_config: PreprocessConfig,
+    size_ratio: float,
+    n_train_size: int,
+    n_features: int,
+) -> dict[str, Any]:
+    model_cfg = copy.deepcopy(base_model_cfg)
+    train_cfg_yaml = copy.deepcopy(base_train_cfg_yaml)
+    ensemble_cfg_yaml = copy.deepcopy(base_ensemble_cfg_yaml)
+    preprocess_config = copy.deepcopy(base_preprocess_config)
+
+    regime = _determine_size_regime(int(n_train_size))
+
+    training_cfg = train_cfg_yaml.setdefault("training", {})
+    early_stop_cfg = training_cfg.setdefault("early_stop", {})
+    configured_metric = _normalize_early_stop_metric_name(
+        early_stop_cfg.get("metric", "hybrid_rmse_rauc")
+    )
+    # Keep backward compatibility with old config defaults while switching the
+    # AutoML benchmark path to the hybrid objective.
+    if configured_metric == "r_auc_mse":
+        configured_metric = "hybrid_rmse_rauc"
+    early_stop_cfg["metric"] = configured_metric
+    early_stop_cfg["hybrid_r_auc_weight"] = float(early_stop_cfg.get("hybrid_r_auc_weight", 0.25))
+
+    optimizer_cfg = train_cfg_yaml.setdefault("optimizer", {})
+    base_weight_decay = float(
+        base_train_cfg_yaml.get("optimizer", {}).get(
+            "weight_decay",
+            optimizer_cfg.get("weight_decay", 0.0),
+        )
+    )
+
+    base_batch_size = int(training_cfg.get("batch_size", 256))
+    batch_divisor_by_regime = {"tiny": 4, "small": 8, "large": 12}
+    batch_divisor = int(batch_divisor_by_regime[regime])
+    adaptive_batch_size = int(min(base_batch_size, max(16, n_train_size // batch_divisor)))
+    training_cfg["batch_size"] = adaptive_batch_size
+
+    encoder_cfg = model_cfg.setdefault("encoder", {})
+    hmtl_cfg = model_cfg.setdefault("hmtl", {})
+
+    base_hidden_width = int(base_model_cfg.get("encoder", {}).get("hidden_width", encoder_cfg.get("hidden_width", 128)))
+    base_low_layer = int(base_model_cfg.get("hmtl", {}).get("low_layer", hmtl_cfg.get("low_layer", 12)))
+    base_high_layer = int(base_model_cfg.get("hmtl", {}).get("high_layer", hmtl_cfg.get("high_layer", 18)))
+    base_lambda_aux = float(base_model_cfg.get("hmtl", {}).get("lambda_aux", hmtl_cfg.get("lambda_aux", 0.5)))
+
+    if regime == "tiny":
+        capped_high = max(1, min(base_high_layer, 6))
+        capped_low = max(1, min(base_low_layer, 2, capped_high))
+        encoder_cfg["hidden_width"] = int(min(base_hidden_width, 64))
+        hmtl_cfg["high_layer"] = int(capped_high)
+        hmtl_cfg["low_layer"] = int(capped_low)
+        hmtl_cfg["enabled"] = True
+        hmtl_cfg["aux_task"] = "bins"
+        hmtl_cfg["lambda_aux"] = float(min(base_lambda_aux, 0.2))
+        optimizer_cfg["weight_decay"] = float(max(base_weight_decay, 1e-4))
+    elif regime == "small":
+        capped_high = max(1, min(base_high_layer, 10))
+        capped_low = max(1, min(base_low_layer, 4, capped_high))
+        encoder_cfg["hidden_width"] = int(min(base_hidden_width, 96))
+        hmtl_cfg["high_layer"] = int(capped_high)
+        hmtl_cfg["low_layer"] = int(capped_low)
+        hmtl_cfg["enabled"] = True
+        hmtl_cfg["aux_task"] = "bins"
+        hmtl_cfg["lambda_aux"] = float(min(base_lambda_aux, 0.35))
+        optimizer_cfg["weight_decay"] = float(max(base_weight_decay, 5e-5))
+    else:
+        hmtl_cfg["enabled"] = True
+        use_contrastive = bool(n_features > 256)
+        hmtl_cfg["aux_task"] = "contrastive" if use_contrastive else "bins"
+        hmtl_cfg["lambda_aux"] = float(base_lambda_aux if use_contrastive else min(base_lambda_aux, 0.35))
+
+    ensemble_block = ensemble_cfg_yaml.setdefault("ensemble", {})
+    base_ensemble_block = base_ensemble_cfg_yaml.get("ensemble", {})
+    base_n_models = int(base_ensemble_block.get("n_models", ensemble_block.get("n_models", 5)))
+    baseline_n_models = int(base_ensemble_block.get("baseline_n_models", base_n_models))
+    ensemble_block["baseline_n_models"] = baseline_n_models
+    if regime == "tiny":
+        ensemble_block["bagging"] = "stratified_bins"
+        ensemble_block["n_models"] = int(min(base_n_models, 8))
+    elif regime == "small":
+        ensemble_block["bagging"] = "stratified_bins"
+        ensemble_block["n_models"] = int(min(base_n_models, 10))
+
+    base_pca_n_components = base_preprocess_config.pca_n_components
+    pca_n_components = base_pca_n_components
+    if regime == "tiny":
+        if n_features >= 64:
+            preprocess_config.pca_enabled = True
+            if pca_n_components is None:
+                pca_n_components = 0.95
+            pca_policy = "enabled_for_tiny_high_dim"
+        else:
+            preprocess_config.pca_enabled = False
+            pca_policy = "disabled_for_tiny_low_dim"
+    elif regime == "small":
+        if n_features < 64:
+            preprocess_config.pca_enabled = False
+            pca_policy = "disabled_for_small_low_dim"
+        else:
+            preprocess_config.pca_enabled = True
+            if pca_n_components is None:
+                pca_n_components = 0.95 if n_features > 256 else 0.99
+            pca_policy = "enabled_for_small_mid_high_dim"
+    else:
+        if n_features <= 16:
+            preprocess_config.pca_enabled = False
+            pca_policy = "disabled_large_low_dim"
+        elif n_features <= 256:
+            preprocess_config.pca_enabled = bool(n_train_size >= 2000)
+            if preprocess_config.pca_enabled and pca_n_components is None:
+                pca_n_components = 0.99
+            pca_policy = "conditional_large_mid_dim"
+        else:
+            preprocess_config.pca_enabled = True
+            if pca_n_components is None:
+                pca_n_components = 0.95
+            pca_policy = "enabled_large_high_dim"
+
+    preprocess_config.pca_n_components = pca_n_components
+
+    effective_config = {
+        "train": {
+            "batch_size": int(training_cfg["batch_size"]),
+            "early_stop": {
+                "metric": str(early_stop_cfg["metric"]),
+                "hybrid_r_auc_weight": float(early_stop_cfg["hybrid_r_auc_weight"]),
+                "patience": int(early_stop_cfg.get("patience", 10)),
+            },
+        },
+        "ensemble": {
+            "bagging": str(ensemble_block.get("bagging", "stratified_bins")),
+            "n_models": int(ensemble_block.get("n_models", 5)),
+            "baseline_n_models": int(ensemble_block.get("baseline_n_models", 5)),
+        },
+        "model": {
+            "hidden_width": int(encoder_cfg.get("hidden_width", base_hidden_width)),
+            "low_layer": int(hmtl_cfg.get("low_layer", base_low_layer)),
+            "high_layer": int(hmtl_cfg.get("high_layer", base_high_layer)),
+            "enable_aux": bool(hmtl_cfg.get("enabled", True)),
+            "aux_task": str(hmtl_cfg.get("aux_task", "contrastive")),
+            "lambda_aux": float(hmtl_cfg.get("lambda_aux", base_lambda_aux)),
+        },
+        "preprocess": {
+            **_preprocess_config_to_dict(preprocess_config),
+        },
+    }
+
+    adaptive_policy = {
+        "regime": regime,
+        "size_ratio": float(size_ratio),
+        "n_train_size": int(n_train_size),
+        "n_features": int(n_features),
+        "batch_divisor": int(batch_divisor),
+        "batch_formula": (
+            f"min(base_batch, max(16, floor(n_train_size/{batch_divisor})))"
+        ),
+        "pca_policy": pca_policy,
+    }
+
+    return {
+        "model_cfg": model_cfg,
+        "train_cfg_yaml": train_cfg_yaml,
+        "ensemble_cfg_yaml": ensemble_cfg_yaml,
+        "preprocess_config": preprocess_config,
+        "effective_config": effective_config,
+        "adaptive_policy": adaptive_policy,
+    }
 
 
 def prepare_preprocessed_splits_for_size(
@@ -260,6 +489,7 @@ def train_and_evaluate_hmtl(
     show_inner_progress: bool = True,
 ) -> dict[str, float]:
     logger = get_logger("automlbenchmark")
+    early_stop_metric, hybrid_weight = _resolve_regression_early_stop_settings(train_cfg_yaml)
 
     train_cfg = TrainConfig(
         lr=float(train_cfg_yaml["optimizer"]["lr"]),
@@ -275,6 +505,8 @@ def train_and_evaluate_hmtl(
         seed=seed,
         task_type="regression",
         show_progress=show_inner_progress,
+        early_stop_metric=early_stop_metric,
+        hybrid_r_auc_weight=hybrid_weight,
     )
 
     ens_cfg = EnsembleConfig(
@@ -319,12 +551,15 @@ def train_and_evaluate_hmtl(
     )
 
     metrics = _metrics_to_dict(eval_results.metrics)
+    metrics["ensemble_avg_val_score"] = float(avg_score)
     metrics["ensemble_avg_val_r_auc_mse"] = float(avg_score)
 
     logger.info(
-        "HMTL metrics: rmse=%.6f r_auc_mse=%.6f",
+        "HMTL metrics: rmse=%.6f r_auc_mse=%.6f (val_metric=%s avg_val_score=%.6f)",
         metrics["rmse"],
         metrics["r_auc_mse"],
+        early_stop_metric,
+        metrics["ensemble_avg_val_score"],
     )
     return metrics
 
@@ -344,6 +579,7 @@ def train_and_evaluate_baseline(
     seed: int,
     show_inner_progress: bool = True,
 ) -> dict[str, float]:
+    early_stop_metric, hybrid_weight = _resolve_regression_early_stop_settings(train_cfg_yaml)
     train_cfg = TrainConfig(
         lr=float(train_cfg_yaml["optimizer"]["lr"]),
         epochs=int(train_cfg_yaml["training"]["epochs"]),
@@ -358,6 +594,8 @@ def train_and_evaluate_baseline(
         seed=seed,
         task_type="regression",
         show_progress=show_inner_progress,
+        early_stop_metric=early_stop_metric,
+        hybrid_r_auc_weight=hybrid_weight,
     )
 
     input_dim = X_tr.shape[1]
@@ -393,7 +631,11 @@ def train_and_evaluate_baseline(
         y_pred, unc_total, unc_epi, unc_alea = ensemble_predict([model], X_te)
 
     elif baseline_name == "catboost":
-        catboost_n_models = min(10, int(ensemble_cfg_yaml["ensemble"].get("n_models", 10)))
+        ensemble_block = ensemble_cfg_yaml.get("ensemble", {})
+        catboost_ref_models = int(
+            ensemble_block.get("baseline_n_models", ensemble_block.get("n_models", 10))
+        )
+        catboost_n_models = min(10, catboost_ref_models)
         model = train_catboost_baseline(
             X_tr=X_tr,
             y_tr=y_tr,
@@ -434,6 +676,7 @@ def run_size_seed_trial(
     show_inner_progress: bool = True,
 ) -> dict[str, Any]:
     logger = get_logger("automlbenchmark")
+    early_stop_metric, _ = _resolve_regression_early_stop_settings(train_cfg_yaml)
 
     split = prepare_preprocessed_splits_for_size(
         df_train_full=df_train_full,
@@ -452,6 +695,8 @@ def run_size_seed_trial(
         "hmtl": None,
         "baselines": {},
         "delta_vs_hmtl": {},
+        "ensemble_val_metric": early_stop_metric,
+        "ensemble_avg_val_score": None,
     }
 
     try:
@@ -470,6 +715,8 @@ def run_size_seed_trial(
             show_inner_progress=show_inner_progress,
         )
         result["hmtl"] = hmtl_metrics
+        if "ensemble_avg_val_score" in hmtl_metrics:
+            result["ensemble_avg_val_score"] = float(hmtl_metrics["ensemble_avg_val_score"])
     except Exception as exc:
         logger.error("HMTL failed for size %.0f%% seed %d: %s", size_ratio * 100, seed, exc)
         result["status"] = "failed"
@@ -673,6 +920,38 @@ def run_single_dataset_experiment(
             logger.info("Size %.0f%%", size_ratio * 100)
             logger.info("-" * 80)
 
+            n_train_estimate = _estimate_n_train_samples(len(df_train_full), size_ratio)
+            effective_bundle = _build_effective_size_configs(
+                base_model_cfg=model_cfg,
+                base_train_cfg_yaml=train_cfg_yaml,
+                base_ensemble_cfg_yaml=ensemble_cfg_yaml,
+                base_preprocess_config=preprocess_config,
+                size_ratio=size_ratio,
+                n_train_size=n_train_estimate,
+                n_features=n_features,
+            )
+            effective_model_cfg = effective_bundle["model_cfg"]
+            effective_train_cfg_yaml = effective_bundle["train_cfg_yaml"]
+            effective_ensemble_cfg_yaml = effective_bundle["ensemble_cfg_yaml"]
+            effective_preprocess_config = effective_bundle["preprocess_config"]
+            effective_config_meta = effective_bundle["effective_config"]
+            adaptive_policy_meta = effective_bundle["adaptive_policy"]
+
+            logger.info(
+                "Adaptive policy: regime=%s n_train=%d n_features=%d batch_size=%d "
+                "hmtl_models=%d bagging=%s aux=%s pca_enabled=%s",
+                adaptive_policy_meta["regime"],
+                n_train_estimate,
+                n_features,
+                effective_config_meta["train"]["batch_size"],
+                effective_config_meta["ensemble"]["n_models"],
+                effective_config_meta["ensemble"]["bagging"],
+                effective_config_meta["model"]["aux_task"]
+                if effective_config_meta["model"]["enable_aux"]
+                else "disabled",
+                effective_config_meta["preprocess"]["pca_enabled"],
+            )
+
             per_seed_runs = []
             for seed in seeds:
                 seed_result = run_size_seed_trial(
@@ -682,13 +961,26 @@ def run_single_dataset_experiment(
                     df_valid=df_valid,
                     df_test=df_test,
                     target_column=target_col,
-                    preprocess_config=preprocess_config,
-                    model_cfg=model_cfg,
-                    train_cfg_yaml=train_cfg_yaml,
-                    ensemble_cfg_yaml=ensemble_cfg_yaml,
+                    preprocess_config=effective_preprocess_config,
+                    model_cfg=effective_model_cfg,
+                    train_cfg_yaml=effective_train_cfg_yaml,
+                    ensemble_cfg_yaml=effective_ensemble_cfg_yaml,
                     baselines=baselines,
                     show_inner_progress=show_inner_progress,
                 )
+                seed_result["adaptive_policy"] = copy.deepcopy(adaptive_policy_meta)
+                seed_result["effective_config"] = copy.deepcopy(effective_config_meta)
+                seed_result["ensemble_val_metric"] = str(
+                    effective_config_meta["train"]["early_stop"]["metric"]
+                )
+                if (
+                    seed_result.get("ensemble_avg_val_score") is None
+                    and isinstance(seed_result.get("hmtl"), dict)
+                    and "ensemble_avg_val_score" in seed_result["hmtl"]
+                ):
+                    seed_result["ensemble_avg_val_score"] = float(
+                        seed_result["hmtl"]["ensemble_avg_val_score"]
+                    )
                 per_seed_runs.append(seed_result)
                 trial_pbar.update(1)
 
@@ -700,14 +992,24 @@ def run_single_dataset_experiment(
             n_train_samples = (
                 int(per_seed_runs[0]["n_train_samples"])
                 if per_seed_runs
-                else int(round(len(df_train_full) * size_ratio))
+                else int(n_train_estimate)
             )
+
+            ensemble_avg_val_score = None
+            if isinstance(size_summary.get("hmtl"), dict):
+                val_score = size_summary["hmtl"].get("ensemble_avg_val_score")
+                if val_score is not None and np.isfinite(float(val_score)):
+                    ensemble_avg_val_score = float(val_score)
 
             result["sizes"][size_key] = {
                 "size_ratio": float(size_ratio),
                 "n_train_samples": int(n_train_samples),
                 "per_seed": {str(run["seed"]): run for run in per_seed_runs},
                 **size_summary,
+                "adaptive_policy": copy.deepcopy(adaptive_policy_meta),
+                "effective_config": copy.deepcopy(effective_config_meta),
+                "ensemble_val_metric": str(effective_config_meta["train"]["early_stop"]["metric"]),
+                "ensemble_avg_val_score": ensemble_avg_val_score,
             }
 
     dataset_result_file = dataset_folder / "results.json"

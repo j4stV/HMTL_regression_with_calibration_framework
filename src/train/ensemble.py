@@ -165,6 +165,8 @@ def fit_ensemble(
                 amp_enabled=train_cfg.amp_enabled,
                 amp_dtype=train_cfg.amp_dtype,
                 amp_eval_enabled=train_cfg.amp_eval_enabled,
+                early_stop_metric=train_cfg.early_stop_metric,
+                hybrid_r_auc_weight=train_cfg.hybrid_r_auc_weight,
             )
             
             # Sample indices based on bagging strategy

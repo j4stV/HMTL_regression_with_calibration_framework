@@ -7,6 +7,7 @@ Produces a single self-contained HTML report with interactive Plotly charts.
 from __future__ import annotations
 
 import argparse
+import html as html_lib
 import json
 import sys
 from datetime import datetime, timezone
@@ -29,6 +30,36 @@ logger = get_logger("analyze_size_dependence")
 
 METRICS = ("delta_rmse", "delta_r_auc_mse")
 FULL_SIZE_RATIO = 1.0
+METRIC_LABELS = {
+    "delta_rmse": "ΔRMSE",
+    "delta_r_auc_mse": "ΔR-AUC MSE",
+}
+METRIC_ANALYSIS_KEYS = {
+    "delta_rmse": {
+        "suffix": "rmse",
+        "mean_col": "mean_delta_rmse",
+        "std_col": "std_delta_rmse",
+        "cohens_col": "cohens_d_rmse",
+        "favor_col": "n_favor_hmtl_rmse",
+    },
+    "delta_r_auc_mse": {
+        "suffix": "r_auc_mse",
+        "mean_col": "mean_delta_r_auc_mse",
+        "std_col": "std_delta_r_auc_mse",
+        "cohens_col": "cohens_d_r_auc_mse",
+        "favor_col": "n_favor_hmtl_r_auc_mse",
+    },
+}
+MODEL_TERM_TO_FACTOR = {
+    "log_n_samples": "n_samples_absolute",
+    "size_ratio": "size_ratio",
+    "log_n_features": "n_features",
+}
+FACTOR_LABELS = {
+    "n_samples_absolute": "log1p(n_samples)",
+    "size_ratio": "size_ratio",
+    "n_features": "log1p(n_features)",
+}
 
 
 def load_results(results_file: Path) -> list[dict[str, Any]]:
@@ -130,6 +161,8 @@ def extract_metrics_long_form(results: list[dict[str, Any]], baseline: str) -> p
         dataset_id = dataset_result.get("dataset_id")
         dataset_name = dataset_result.get("dataset_name")
         n_features = _safe_float(dataset_result.get("n_features"))
+        dataset_train_samples = _safe_float(dataset_result.get("n_samples_train"))
+        dataset_total_samples = _safe_float(dataset_result.get("n_samples_total"))
 
         sizes = dataset_result.get("sizes", {})
         if not isinstance(sizes, dict):
@@ -150,6 +183,16 @@ def extract_metrics_long_form(results: list[dict[str, Any]], baseline: str) -> p
                 extracted = _extract_from_aggregate_block(size_data, baseline=baseline)
             else:
                 extracted = _extract_legacy_block(size_data, baseline=baseline)
+
+            n_samples = _safe_float(size_data.get("n_train_samples"))
+            if n_samples is None:
+                n_samples = _safe_float(size_data.get("n_samples_train"))
+            if n_samples is None:
+                n_samples = _safe_float(size_data.get("n_samples"))
+            if n_samples is None and dataset_train_samples is not None:
+                n_samples = float(dataset_train_samples * size_ratio)
+            if n_samples is None and dataset_total_samples is not None:
+                n_samples = float(dataset_total_samples * size_ratio)
 
             if (
                 extracted["delta_rmse"] is None
@@ -172,6 +215,7 @@ def extract_metrics_long_form(results: list[dict[str, Any]], baseline: str) -> p
                     "dataset_name": dataset_name,
                     "size_ratio": float(size_ratio),
                     "size_pct": float(size_ratio) * 100.0,
+                    "n_samples": n_samples,
                     "n_features": n_features,
                     "hmtl_rmse": extracted["hmtl_rmse"],
                     f"{baseline}_rmse": extracted["baseline_rmse"],
@@ -296,6 +340,243 @@ def _relationship_analysis(
     }
 
 
+def _require_statsmodels_modules() -> tuple[Any, Any]:
+    try:
+        import statsmodels.api as sm  # type: ignore
+        import statsmodels.formula.api as smf  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(
+            "statsmodels is required for hypotheses and factorial analysis. "
+            "Install dependencies from requirements.txt or run: pip install statsmodels"
+        ) from exc
+    return sm, smf
+
+
+def _one_sided_greater_from_two_sided(*, t_stat: float | None, p_two_sided: float | None) -> float | None:
+    if t_stat is None or p_two_sided is None:
+        return None
+    p_two = float(max(0.0, min(1.0, p_two_sided)))
+    if t_stat >= 0.0:
+        return p_two / 2.0
+    return 1.0 - (p_two / 2.0)
+
+
+def _build_factorial_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    required_cols = ["n_samples", "size_ratio", "n_features"]
+    working = df.dropna(subset=required_cols).copy()
+    if working.empty:
+        return working
+    working["log_n_samples"] = np.log1p(working["n_samples"].astype(float))
+    working["log_n_features"] = np.log1p(working["n_features"].astype(float))
+    return working
+
+
+def _empty_factorial_metric_result(*, formula: str, n_points: int, min_points_required: int) -> dict[str, Any]:
+    return {
+        "formula": formula,
+        "n_points": n_points,
+        "min_points_required": int(min_points_required),
+        "degrees_of_freedom": None,
+        "r_squared": None,
+        "adjusted_r_squared": None,
+        "f_statistic": None,
+        "f_p_value": None,
+        "intercept": {"coef": None, "std_err": None, "t_stat": None, "p_value": None, "ci_low": None, "ci_high": None},
+        "factors": {
+            factor: {
+                "term": term,
+                "coef": None,
+                "std_err": None,
+                "t_stat": None,
+                "p_value": None,
+                "ci_low": None,
+                "ci_high": None,
+            }
+            for term, factor in MODEL_TERM_TO_FACTOR.items()
+        },
+        "significant_factors": [],
+        "raw_output": {"summary": "", "anova_type_2": ""},
+        "error": None,
+        "verdict": "insufficient_evidence",
+    }
+
+
+def _factor_block_from_model(
+    *,
+    model: Any,
+    param_name: str,
+    conf_int_frame: pd.DataFrame,
+) -> dict[str, float | None]:
+    ci_low = None
+    ci_high = None
+    if param_name in conf_int_frame.index:
+        ci_low = _safe_float(conf_int_frame.loc[param_name, 0])
+        ci_high = _safe_float(conf_int_frame.loc[param_name, 1])
+    return {
+        "coef": _safe_float(model.params.get(param_name)),
+        "std_err": _safe_float(model.bse.get(param_name)),
+        "t_stat": _safe_float(model.tvalues.get(param_name)),
+        "p_value": _safe_float(model.pvalues.get(param_name)),
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+    }
+
+
+def _build_factorial_metric_result(
+    *,
+    working_df: pd.DataFrame,
+    metric_col: str,
+    min_datasets: int,
+    alpha: float,
+    sm: Any,
+    smf: Any,
+) -> dict[str, Any]:
+    formula = f"{metric_col} ~ log_n_samples + size_ratio + log_n_features"
+    min_points_required = max(int(min_datasets), 5)
+    metric_df = working_df.dropna(subset=[metric_col]).copy()
+    n_points = int(len(metric_df))
+    result = _empty_factorial_metric_result(
+        formula=formula,
+        n_points=n_points,
+        min_points_required=min_points_required,
+    )
+    if n_points < min_points_required:
+        return result
+
+    try:
+        fitted = smf.ols(formula=formula, data=metric_df).fit()
+    except Exception as exc:
+        result["error"] = str(exc)
+        return result
+
+    conf_int_frame = fitted.conf_int(alpha=alpha)
+    result["degrees_of_freedom"] = _safe_float(fitted.df_resid)
+    result["r_squared"] = _safe_float(fitted.rsquared)
+    result["adjusted_r_squared"] = _safe_float(fitted.rsquared_adj)
+    result["f_statistic"] = _safe_float(getattr(fitted, "fvalue", None))
+    result["f_p_value"] = _safe_float(getattr(fitted, "f_pvalue", None))
+    result["intercept"] = _factor_block_from_model(
+        model=fitted,
+        param_name="Intercept",
+        conf_int_frame=conf_int_frame,
+    )
+
+    factors: dict[str, Any] = {}
+    for term, factor in MODEL_TERM_TO_FACTOR.items():
+        factor_block = _factor_block_from_model(
+            model=fitted,
+            param_name=term,
+            conf_int_frame=conf_int_frame,
+        )
+        factor_block["term"] = term
+        factors[factor] = factor_block
+
+    significant_factors = [
+        factor
+        for factor, block in factors.items()
+        if block.get("p_value") is not None and float(block["p_value"]) < float(alpha)
+    ]
+    result["factors"] = factors
+    result["significant_factors"] = significant_factors
+    result["raw_output"]["summary"] = fitted.summary().as_text()
+    try:
+        anova_frame = sm.stats.anova_lm(fitted, typ=2)
+        result["raw_output"]["anova_type_2"] = anova_frame.to_string()
+    except Exception as exc:
+        result["raw_output"]["anova_type_2"] = f"ANOVA Type II unavailable: {exc}"
+
+    result["verdict"] = "completed"
+    return result
+
+
+def _build_hypotheses_from_factorial(
+    *,
+    metric_col: str,
+    factorial_metric_result: dict[str, Any],
+    alpha: float,
+) -> dict[str, Any]:
+    checks: dict[str, Any] = {}
+
+    for factor, factor_label in FACTOR_LABELS.items():
+        block = factorial_metric_result.get("factors", {}).get(factor, {})
+        coef = _safe_float(block.get("coef"))
+        t_stat = _safe_float(block.get("t_stat"))
+        p_two = _safe_float(block.get("p_value"))
+        p_one = _one_sided_greater_from_two_sided(t_stat=t_stat, p_two_sided=p_two)
+        if coef is None or p_one is None:
+            verdict = "insufficient_evidence"
+        elif coef > 0.0 and p_one < alpha:
+            verdict = "supported"
+        else:
+            verdict = "not_supported"
+
+        checks[factor] = {
+            "factor_label": factor_label,
+            "hypothesis": f"{factor_label} coefficient > 0",
+            "coef": coef,
+            "t_stat": t_stat,
+            "p_value_two_sided": p_two,
+            "p_value_one_sided_greater": p_one,
+            "verdict": verdict,
+        }
+
+    verdicts = [checks[factor]["verdict"] for factor in FACTOR_LABELS]
+    if any(verdict == "insufficient_evidence" for verdict in verdicts):
+        overall_verdict = "insufficient_evidence"
+    elif all(verdict == "supported" for verdict in verdicts):
+        overall_verdict = "supported"
+    else:
+        overall_verdict = "not_supported"
+
+    return {
+        "metric": metric_col,
+        "metric_label": METRIC_LABELS.get(metric_col, metric_col),
+        "n_points": int(factorial_metric_result.get("n_points", 0)),
+        "checks": checks,
+        "verdict": overall_verdict,
+    }
+
+
+def build_hypotheses_and_factorial_analysis(
+    df: pd.DataFrame,
+    *,
+    min_datasets: int,
+    alpha: float,
+    sm: Any,
+    smf: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    working = _build_factorial_dataset(df)
+    hypotheses: dict[str, Any] = {
+        "n_points_total": int(len(working)),
+        "verdict": {},
+    }
+    factorial_analysis: dict[str, Any] = {
+        "n_points_total": int(len(working)),
+        "formula_template": "metric ~ log_n_samples + size_ratio + log_n_features",
+        "metrics": {},
+    }
+
+    for metric_col in METRICS:
+        factorial_metric_result = _build_factorial_metric_result(
+            working_df=working,
+            metric_col=metric_col,
+            min_datasets=min_datasets,
+            alpha=alpha,
+            sm=sm,
+            smf=smf,
+        )
+        hypotheses_metric = _build_hypotheses_from_factorial(
+            metric_col=metric_col,
+            factorial_metric_result=factorial_metric_result,
+            alpha=alpha,
+        )
+        hypotheses[metric_col] = hypotheses_metric
+        hypotheses["verdict"][metric_col] = hypotheses_metric["verdict"]
+        factorial_analysis["metrics"][metric_col] = factorial_metric_result
+
+    return hypotheses, factorial_analysis
+
+
 def _empty_two_factor_result(*, n_points: int = 0, degrees_of_freedom: int = 0) -> dict[str, Any]:
     return {
         "n_points": n_points,
@@ -403,31 +684,23 @@ def perform_size_by_ratio_analysis(df: pd.DataFrame) -> dict[str, Any]:
 
     for size_ratio in sorted(df["size_ratio"].unique()):
         subset = df[df["size_ratio"] == size_ratio]
-        deltas_rmse = subset["delta_rmse"].astype(float).values
-        deltas_rauc = subset["delta_r_auc_mse"].astype(float).values
-
-        t_rmse, p_rmse = _one_sample_ttest_greater(deltas_rmse)
-        w_rmse, pw_rmse = _wilcoxon_greater(deltas_rmse)
-        t_rauc, p_rauc = _one_sample_ttest_greater(deltas_rauc)
-        w_rauc, pw_rauc = _wilcoxon_greater(deltas_rauc)
-
-        analysis[str(size_ratio)] = {
+        row: dict[str, Any] = {
             "size_ratio": float(size_ratio),
             "size_pct": float(size_ratio) * 100.0,
             "n_datasets": int(len(subset)),
-            "mean_delta_rmse": float(np.mean(deltas_rmse)),
-            "std_delta_rmse": float(np.std(deltas_rmse, ddof=1)) if len(deltas_rmse) > 1 else 0.0,
-            "mean_delta_r_auc_mse": float(np.mean(deltas_rauc)),
-            "std_delta_r_auc_mse": float(np.std(deltas_rauc, ddof=1)) if len(deltas_rauc) > 1 else 0.0,
-            "ttest_greater_rmse": {"statistic": t_rmse, "p_value": p_rmse},
-            "wilcoxon_greater_rmse": {"statistic": w_rmse, "p_value": pw_rmse},
-            "ttest_greater_r_auc_mse": {"statistic": t_rauc, "p_value": p_rauc},
-            "wilcoxon_greater_r_auc_mse": {"statistic": w_rauc, "p_value": pw_rauc},
-            "cohens_d_rmse": _effect_size(deltas_rmse),
-            "cohens_d_r_auc_mse": _effect_size(deltas_rauc),
-            "n_favor_hmtl_rmse": int(np.sum(deltas_rmse > 0)),
-            "n_favor_hmtl_r_auc_mse": int(np.sum(deltas_rauc > 0)),
         }
+        for metric_col, keys in METRIC_ANALYSIS_KEYS.items():
+            values = subset[metric_col].astype(float).values
+            t_stat, p_t = _one_sample_ttest_greater(values)
+            w_stat, p_w = _wilcoxon_greater(values)
+            row[keys["mean_col"]] = float(np.mean(values))
+            row[keys["std_col"]] = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+            row[f"ttest_greater_{keys['suffix']}"] = {"statistic": t_stat, "p_value": p_t}
+            row[f"wilcoxon_greater_{keys['suffix']}"] = {"statistic": w_stat, "p_value": p_w}
+            row[keys["cohens_col"]] = _effect_size(values)
+            row[keys["favor_col"]] = int(np.sum(values > 0))
+
+        analysis[str(size_ratio)] = row
 
     return analysis
 
@@ -537,45 +810,34 @@ def build_size_analysis(
             "n_unique_sizes": 0,
             "by_size": {},
             "slope_analysis": {},
-            "verdict": {"delta_rmse": "insufficient_evidence", "delta_r_auc_mse": "insufficient_evidence"},
+            "verdict": {metric: "insufficient_evidence" for metric in METRICS},
         }
 
     by_size = perform_size_by_ratio_analysis(df)
-    slope_rmse_df = compute_dataset_slopes(df, metric_col="delta_rmse", min_size_points=min_size_points)
-    slope_rauc_df = compute_dataset_slopes(df, metric_col="delta_r_auc_mse", min_size_points=min_size_points)
-    slope_rmse_stats = analyze_slopes(slope_rmse_df, min_datasets=min_datasets)
-    slope_rauc_stats = analyze_slopes(slope_rauc_df, min_datasets=min_datasets)
     n_unique_sizes = int(df["size_ratio"].nunique())
 
-    verdict_rmse = determine_size_verdict(
-        slope_stats=slope_rmse_stats,
-        n_unique_sizes=n_unique_sizes,
-        min_datasets=min_datasets,
-        min_size_points=min_size_points,
-        alpha=alpha,
-    )
-    verdict_rauc = determine_size_verdict(
-        slope_stats=slope_rauc_stats,
-        n_unique_sizes=n_unique_sizes,
-        min_datasets=min_datasets,
-        min_size_points=min_size_points,
-        alpha=alpha,
-    )
+    slope_analysis: dict[str, Any] = {}
+    verdict: dict[str, str] = {}
+    for metric_col in METRICS:
+        slope_df = compute_dataset_slopes(df, metric_col=metric_col, min_size_points=min_size_points)
+        slope_stats = analyze_slopes(slope_df, min_datasets=min_datasets)
+        slope_analysis[metric_col] = {
+            "stats": slope_stats,
+            "per_dataset": slope_df.to_dict(orient="records"),
+        }
+        verdict[metric_col] = determine_size_verdict(
+            slope_stats=slope_stats,
+            n_unique_sizes=n_unique_sizes,
+            min_datasets=min_datasets,
+            min_size_points=min_size_points,
+            alpha=alpha,
+        )
 
     return {
         "n_unique_sizes": n_unique_sizes,
         "by_size": by_size,
-        "slope_analysis": {
-            "delta_rmse": {
-                "stats": slope_rmse_stats,
-                "per_dataset": slope_rmse_df.to_dict(orient="records"),
-            },
-            "delta_r_auc_mse": {
-                "stats": slope_rauc_stats,
-                "per_dataset": slope_rauc_df.to_dict(orient="records"),
-            },
-        },
-        "verdict": {"delta_rmse": verdict_rmse, "delta_r_auc_mse": verdict_rauc},
+        "slope_analysis": slope_analysis,
+        "verdict": verdict,
     }
 
 
@@ -877,6 +1139,79 @@ def _build_feature_scatter_figure(
     return fig
 
 
+def _build_size_feature_scatter_figure(
+    df: pd.DataFrame,
+    *,
+    metric_col: str,
+    title: str,
+    y_title: str,
+) -> go.Figure:
+    fig = go.Figure()
+    working = df.dropna(subset=["n_features", metric_col]).copy()
+    if working.empty:
+        return fig.update_layout(title=title, template="plotly_white")
+
+    names = working["dataset_name"].astype(str).values
+    size_ratio = working["size_ratio"].astype(float).values
+    marker: dict[str, Any] = {"size": 9, "opacity": 0.8}
+    if "n_samples" in working.columns and working["n_samples"].notna().any():
+        sample_counts = working["n_samples"].astype(float).values
+        q_low = float(np.nanpercentile(sample_counts, 10))
+        q_high = float(np.nanpercentile(sample_counts, 95))
+        if not np.isfinite(q_low):
+            q_low = float(np.nanmin(sample_counts))
+        if not np.isfinite(q_high):
+            q_high = float(np.nanmax(sample_counts))
+        if q_high <= q_low:
+            q_low = float(np.nanmin(sample_counts))
+            q_high = float(np.nanmax(sample_counts))
+        # Use only the darker half of the green palette to avoid near-white markers.
+        marker.update(
+            {
+                "color": sample_counts,
+                "colorscale": [
+                    [0.0, "#74C476"],
+                    [0.4, "#41AB5D"],
+                    [0.7, "#238B45"],
+                    [1.0, "#005A32"],
+                ],
+                "cmin": q_low,
+                "cmax": q_high,
+                "colorbar": {"title": "n_samples"},
+                "showscale": True,
+            }
+        )
+        hovertemplate = (
+            "Dataset=%{text}<br>n_features=%{x:.0f}<br>"
+            "size_ratio=%{customdata[0]:.2f}<br>n_samples=%{customdata[1]:.0f}<br>"
+            "value=%{y:.4f}<extra></extra>"
+        )
+        customdata = np.column_stack([size_ratio, sample_counts])
+    else:
+        marker["color"] = "#2F9E44"
+        hovertemplate = (
+            "Dataset=%{text}<br>n_features=%{x:.0f}<br>"
+            "size_ratio=%{customdata[0]:.2f}<br>value=%{y:.4f}<extra></extra>"
+        )
+        customdata = np.column_stack([size_ratio])
+
+    fig.add_trace(
+        go.Scatter(
+            x=working["n_features"].astype(float).values,
+            y=working[metric_col].astype(float).values,
+            mode="markers",
+            marker=marker,
+            text=names,
+            customdata=customdata,
+            hovertemplate=hovertemplate,
+            name="dataset-size points",
+        )
+    )
+    fig.add_hline(y=0.0, line_dash="dash", line_color="#6C757D")
+    fig.update_layout(title=title, xaxis_title="n_features", yaxis_title=y_title, template="plotly_white")
+    return fig
+
+
 def _build_feature_bin_bar_figure(feature_analysis: dict[str, Any]) -> go.Figure:
     fig = go.Figure()
     rmse_bins = feature_analysis.get("feature_bin_summary", {}).get("delta_rmse", [])
@@ -1024,12 +1359,27 @@ def generate_html_report(
     size_analysis = report.get("size_analysis", {})
     feature_analysis = report.get("feature_analysis", {})
     joint_analysis = report.get("joint_analysis", {})
+    hypotheses = report.get("hypotheses", {})
+    factorial_analysis = report.get("factorial_analysis", {})
+    summary = report["summary"]
 
     by_size = size_analysis.get("by_size", {})
     include_js = True
     figure_blocks: list[str] = []
 
     figures: list[go.Figure] = [
+        _build_size_feature_scatter_figure(
+            df,
+            metric_col="delta_rmse",
+            title="n_features vs ΔRMSE (all size ratios)",
+            y_title="ΔRMSE",
+        ),
+        _build_size_feature_scatter_figure(
+            df,
+            metric_col="delta_r_auc_mse",
+            title="n_features vs ΔR-AUC MSE (all size ratios)",
+            y_title="ΔR-AUC MSE",
+        ),
         _build_size_trend_figure(by_size, "delta_rmse", "Size trend: Mean ΔRMSE", "Mean ΔRMSE"),
         _build_size_trend_figure(by_size, "delta_r_auc_mse", "Size trend: Mean ΔR-AUC MSE", "Mean ΔR-AUC MSE"),
         _build_size_boxplot_figure(df),
@@ -1152,6 +1502,75 @@ def generate_html_report(
         },
     ]
 
+    hypothesis_rows: list[dict[str, Any]] = []
+    factorial_overview_rows: list[dict[str, Any]] = []
+    factorial_factor_rows: list[dict[str, Any]] = []
+    factorial_raw_blocks: list[str] = []
+
+    for metric_col in METRICS:
+        metric_label = METRIC_LABELS.get(metric_col, metric_col)
+        metric_hyp = hypotheses.get(metric_col, {})
+        checks = metric_hyp.get("checks", {})
+        for factor in FACTOR_LABELS:
+            check = checks.get(factor, {})
+            hypothesis_rows.append(
+                {
+                    "metric": metric_label,
+                    "factor": FACTOR_LABELS[factor],
+                    "coef": _fmt_float(check.get("coef")),
+                    "t_stat": _fmt_float(check.get("t_stat")),
+                    "p_one_sided": _fmt_float(check.get("p_value_one_sided_greater")),
+                    "verdict": check.get("verdict", "insufficient_evidence").replace("_", " "),
+                }
+            )
+
+        metric_factorial = factorial_analysis.get("metrics", {}).get(metric_col, {})
+        significant = metric_factorial.get("significant_factors", [])
+        factor_labels = [FACTOR_LABELS.get(name, name) for name in significant]
+        factorial_overview_rows.append(
+            {
+                "metric": metric_label,
+                "n_points": int(metric_factorial.get("n_points", 0)),
+                "r_squared": _fmt_float(metric_factorial.get("r_squared")),
+                "adj_r_squared": _fmt_float(metric_factorial.get("adjusted_r_squared")),
+                "f_p_value": _fmt_float(metric_factorial.get("f_p_value")),
+                "significant_factors": ", ".join(factor_labels) if factor_labels else "none",
+                "verdict": metric_factorial.get("verdict", "insufficient_evidence").replace("_", " "),
+            }
+        )
+        for factor in FACTOR_LABELS:
+            block = metric_factorial.get("factors", {}).get(factor, {})
+            p_value = block.get("p_value")
+            is_significant = p_value is not None and float(p_value) < float(summary["alpha"])
+            factorial_factor_rows.append(
+                {
+                    "metric": metric_label,
+                    "factor": FACTOR_LABELS[factor],
+                    "coef": _fmt_float(block.get("coef")),
+                    "p_value": _fmt_float(p_value),
+                    "ci_low": _fmt_float(block.get("ci_low")),
+                    "ci_high": _fmt_float(block.get("ci_high")),
+                    "significant": "yes" if is_significant else "no",
+                }
+            )
+
+        raw_summary = metric_factorial.get("raw_output", {}).get("summary", "")
+        raw_anova = metric_factorial.get("raw_output", {}).get("anova_type_2", "")
+        if raw_summary:
+            factorial_raw_blocks.append(
+                "<h3>{title} OLS Summary</h3><pre>{content}</pre>".format(
+                    title=html_lib.escape(metric_label),
+                    content=html_lib.escape(raw_summary),
+                )
+            )
+        if raw_anova:
+            factorial_raw_blocks.append(
+                "<h3>{title} ANOVA Type II</h3><pre>{content}</pre>".format(
+                    title=html_lib.escape(metric_label),
+                    content=html_lib.escape(raw_anova),
+                )
+            )
+
     for row in feature_summary_rows + joint_summary_rows + joint_two_factor_rows:
         row["verdict"] = row["verdict"].replace("_", " ")
 
@@ -1161,7 +1580,6 @@ def generate_html_report(
             f"{int(dataset_feature_df['n_features'].min())} - {int(dataset_feature_df['n_features'].max())}"
         )
 
-    summary = report["summary"]
     overall = report.get("status", "insufficient_evidence")
 
     html = f"""<!DOCTYPE html>
@@ -1264,6 +1682,20 @@ def generate_html_report(
     .data-table th {{
       background: #edf4fb;
       font-weight: 700;
+    }}
+    pre {{
+      background: #0f1b2a;
+      color: #e9f0f8;
+      border-radius: 10px;
+      padding: 12px;
+      overflow-x: auto;
+      font-size: 0.8rem;
+      line-height: 1.35;
+      white-space: pre;
+    }}
+    h3 {{
+      margin: 16px 0 8px;
+      font-size: 1rem;
     }}
     .footer {{
       margin-top: 20px;
@@ -1372,6 +1804,64 @@ def generate_html_report(
       )}
     </div>
 
+    <h2>Hypotheses</h2>
+    <div class="section">
+      <p class="muted">
+        One-sided checks for positive growth of deltas over the three factors:
+        <code>log1p(n_samples)</code>, <code>size_ratio</code>, <code>log1p(n_features)</code>.
+      </p>
+      <div class="badges">
+        {_verdict_badge(hypotheses.get("verdict", {}).get("delta_rmse", "insufficient_evidence"))}
+        {_verdict_badge(hypotheses.get("verdict", {}).get("delta_r_auc_mse", "insufficient_evidence"))}
+      </div>
+      {_table_html(
+        hypothesis_rows,
+        ["metric", "factor", "coef", "t_stat", "p_one_sided", "verdict"],
+        {
+          "metric": "Metric",
+          "factor": "Hypothesis factor",
+          "coef": "Coef",
+          "t_stat": "t-stat",
+          "p_one_sided": "p-value (one-sided)",
+          "verdict": "Verdict",
+        },
+      )}
+    </div>
+
+    <h2>Factorial Analysis</h2>
+    <div class="section">
+      <p class="muted">
+        Main-effects model formula: <code>{summary.get("factorial_formula", "metric ~ log_n_samples + size_ratio + log_n_features")}</code>.
+      </p>
+      {_table_html(
+        factorial_overview_rows,
+        ["metric", "n_points", "r_squared", "adj_r_squared", "f_p_value", "significant_factors", "verdict"],
+        {
+          "metric": "Metric",
+          "n_points": "N points",
+          "r_squared": "R²",
+          "adj_r_squared": "Adj. R²",
+          "f_p_value": "F-test p-value",
+          "significant_factors": "Significant factors",
+          "verdict": "Verdict",
+        },
+      )}
+      {_table_html(
+        factorial_factor_rows,
+        ["metric", "factor", "coef", "p_value", "ci_low", "ci_high", "significant"],
+        {
+          "metric": "Metric",
+          "factor": "Factor",
+          "coef": "Coef",
+          "p_value": "p-value",
+          "ci_low": "CI low",
+          "ci_high": "CI high",
+          "significant": "Significant",
+        },
+      )}
+      {"".join(factorial_raw_blocks) if factorial_raw_blocks else "<p class='muted'>No statsmodels output available.</p>"}
+    </div>
+
     <div class="footer">
       Report file: {output_path.name}
     </div>
@@ -1400,6 +1890,7 @@ def analyze_size_dependence(
             f"Requested baseline '{baseline}' not found in results. Available baselines: {available}"
         )
 
+    sm, smf = _require_statsmodels_modules()
     df = extract_metrics_long_form(results, baseline=baseline)
     dataset_feature_df = _build_dataset_feature_df(df)
 
@@ -1419,6 +1910,13 @@ def analyze_size_dependence(
         min_datasets=min_datasets,
         min_size_points=min_size_points,
         alpha=alpha,
+    )
+    hypotheses, factorial_analysis = build_hypotheses_and_factorial_analysis(
+        df,
+        min_datasets=min_datasets,
+        alpha=alpha,
+        sm=sm,
+        smf=smf,
     )
 
     status = "insufficient_evidence"
@@ -1442,11 +1940,19 @@ def analyze_size_dependence(
             "min_size_points_required": int(min_size_points),
             "alpha": float(alpha),
             "available_baselines": available_baselines,
+            "factorial_formula": "metric ~ log_n_samples + size_ratio + log_n_features",
+            "factorial_n_points_total": int(factorial_analysis.get("n_points_total", 0)),
+            "factorial_n_points_by_metric": {
+                metric: int(factorial_analysis.get("metrics", {}).get(metric, {}).get("n_points", 0))
+                for metric in METRICS
+            },
         },
         "status": status,
         "size_analysis": size_analysis,
         "feature_analysis": feature_analysis,
         "joint_analysis": joint_analysis,
+        "hypotheses": hypotheses,
+        "factorial_analysis": factorial_analysis,
         "html_report_path": str(html_report_path),
     }
 

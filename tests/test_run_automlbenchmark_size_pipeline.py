@@ -66,6 +66,88 @@ def test_prepare_preprocessed_splits_for_size_refits_preprocessor():
 
 
 
+def test_build_effective_size_configs_balanced_policy():
+    base_model_cfg = {
+        "encoder": {"hidden_width": 128, "alpha_dropout": 0.0},
+        "hmtl": {
+            "low_layer": 12,
+            "high_layer": 18,
+            "n_bins": 5,
+            "lambda_aux": 0.5,
+            "enabled": True,
+            "aux_task": "contrastive",
+            "proj_dim": 16,
+        },
+    }
+    base_train_cfg = {
+        "optimizer": {"lr": 1e-3, "name": "adamw"},
+        "training": {"epochs": 2, "batch_size": 4096, "early_stop": {"patience": 3}},
+    }
+    base_ensemble_cfg = {"ensemble": {"n_models": 20, "bagging": "stratified_kfold"}}
+    base_preprocess = PreprocessConfig(pca_enabled=True, pca_n_components=None)
+
+    tiny = size_script._build_effective_size_configs(
+        base_model_cfg=base_model_cfg,
+        base_train_cfg_yaml=base_train_cfg,
+        base_ensemble_cfg_yaml=base_ensemble_cfg,
+        base_preprocess_config=base_preprocess,
+        size_ratio=0.2,
+        n_train_size=200,
+        n_features=20,
+    )
+    assert tiny["adaptive_policy"]["regime"] == "tiny"
+    assert tiny["train_cfg_yaml"]["training"]["batch_size"] == 50
+    assert tiny["ensemble_cfg_yaml"]["ensemble"]["n_models"] == 8
+    assert tiny["ensemble_cfg_yaml"]["ensemble"]["bagging"] == "stratified_bins"
+    assert tiny["ensemble_cfg_yaml"]["ensemble"]["baseline_n_models"] == 20
+    assert tiny["model_cfg"]["hmtl"]["enabled"] is True
+    assert tiny["model_cfg"]["hmtl"]["aux_task"] == "bins"
+    assert tiny["model_cfg"]["hmtl"]["lambda_aux"] == 0.2
+    assert tiny["model_cfg"]["encoder"]["hidden_width"] == 64
+    assert tiny["model_cfg"]["hmtl"]["high_layer"] == 6
+    assert tiny["model_cfg"]["hmtl"]["low_layer"] == 2
+    assert tiny["preprocess_config"].pca_enabled is False
+
+    small = size_script._build_effective_size_configs(
+        base_model_cfg=base_model_cfg,
+        base_train_cfg_yaml=base_train_cfg,
+        base_ensemble_cfg_yaml=base_ensemble_cfg,
+        base_preprocess_config=base_preprocess,
+        size_ratio=0.5,
+        n_train_size=1000,
+        n_features=300,
+    )
+    assert small["adaptive_policy"]["regime"] == "small"
+    assert small["train_cfg_yaml"]["training"]["batch_size"] == 125
+    assert small["ensemble_cfg_yaml"]["ensemble"]["n_models"] == 10
+    assert small["ensemble_cfg_yaml"]["ensemble"]["bagging"] == "stratified_bins"
+    assert small["model_cfg"]["hmtl"]["enabled"] is True
+    assert small["model_cfg"]["hmtl"]["aux_task"] == "bins"
+    assert small["model_cfg"]["encoder"]["hidden_width"] == 96
+    assert small["model_cfg"]["hmtl"]["high_layer"] == 10
+    assert small["model_cfg"]["hmtl"]["low_layer"] == 4
+    assert small["preprocess_config"].pca_enabled is True
+    assert small["preprocess_config"].pca_n_components == 0.95
+
+    large = size_script._build_effective_size_configs(
+        base_model_cfg=base_model_cfg,
+        base_train_cfg_yaml=base_train_cfg,
+        base_ensemble_cfg_yaml=base_ensemble_cfg,
+        base_preprocess_config=base_preprocess,
+        size_ratio=1.0,
+        n_train_size=5000,
+        n_features=200,
+    )
+    assert large["adaptive_policy"]["regime"] == "large"
+    assert large["train_cfg_yaml"]["training"]["batch_size"] == 416
+    assert large["ensemble_cfg_yaml"]["ensemble"]["n_models"] == 20
+    assert large["ensemble_cfg_yaml"]["ensemble"]["bagging"] == "stratified_kfold"
+    assert large["model_cfg"]["hmtl"]["enabled"] is True
+    assert large["model_cfg"]["hmtl"]["aux_task"] == "bins"
+    assert large["preprocess_config"].pca_enabled is True
+    assert large["preprocess_config"].pca_n_components == 0.99
+
+
 def test_run_single_dataset_experiment_smoke_with_two_baselines(monkeypatch, tmp_path: Path):
     df = _make_df(30)
 
@@ -189,6 +271,16 @@ def test_run_single_dataset_experiment_smoke_with_two_baselines(monkeypatch, tmp
     assert "catboost" in size_50
     assert "delta_rmse" in size_50
     assert "delta_r_auc_mse" in size_50
+    assert "adaptive_policy" in size_50
+    assert "effective_config" in size_50
+    assert "ensemble_val_metric" in size_50
+    assert "ensemble_avg_val_score" in size_50
+
+    seed_payload = size_50["per_seed"]["11"]
+    assert "adaptive_policy" in seed_payload
+    assert "effective_config" in seed_payload
+    assert "ensemble_val_metric" in seed_payload
+    assert seed_payload["ensemble_val_metric"] == "hybrid_rmse_rauc"
 
     saved_path = tmp_path / "dataset_123_toy_dataset" / "results.json"
     assert saved_path.exists()

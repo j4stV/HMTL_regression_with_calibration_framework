@@ -18,6 +18,8 @@ class _DummyModel:
 def test_fit_ensemble_propagates_task_type(monkeypatch):
     captured_task_types: list[str] = []
     captured_sigma_weights: list[float] = []
+    captured_early_stop_metrics: list[str] = []
+    captured_hybrid_weights: list[float] = []
 
     def fake_train_model(
         model,
@@ -34,6 +36,8 @@ def test_fit_ensemble_propagates_task_type(monkeypatch):
     ):
         captured_task_types.append(cfg.task_type)
         captured_sigma_weights.append(cfg.sigma_reg_weight)
+        captured_early_stop_metrics.append(cfg.early_stop_metric)
+        captured_hybrid_weights.append(cfg.hybrid_r_auc_weight)
         return 0.123
 
     # fit_ensemble imports train_model from src.train.loop inside the function body.
@@ -49,6 +53,8 @@ def test_fit_ensemble_propagates_task_type(monkeypatch):
         batch_size=8,
         task_type="classification",
         sigma_reg_weight=0.777,
+        early_stop_metric="rmse",
+        hybrid_r_auc_weight=0.33,
         seed=123,
     )
 
@@ -67,6 +73,8 @@ def test_fit_ensemble_propagates_task_type(monkeypatch):
     assert avg_score == 0.123
     assert captured_task_types == ["classification", "classification"]
     assert captured_sigma_weights == [0.777, 0.777]
+    assert captured_early_stop_metrics == ["rmse", "rmse"]
+    assert captured_hybrid_weights == [0.33, 0.33]
 
 
 def test_fit_ensemble_stratified_kfold_cycles_when_requested_splits_too_high(monkeypatch):
