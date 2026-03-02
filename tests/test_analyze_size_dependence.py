@@ -144,6 +144,12 @@ def test_analyze_size_dependence_positive_hypotheses_and_factorial(tmp_path: Pat
         assert checks["size_ratio"]["verdict"] == "supported"
         assert checks["n_features"]["verdict"] == "supported"
         assert metric_hyp["verdict"] == "supported"
+        overall_delta = metric_hyp["overall_delta"]
+        assert overall_delta["verdict"] == "supported"
+        assert overall_delta["mean_delta"] is not None
+        assert overall_delta["ci_low"] is not None
+        assert overall_delta["ci_high"] is not None
+        assert overall_delta["p_value_one_sided_greater"] is not None
 
         metric_factorial = report["factorial_analysis"]["metrics"][metric_col]
         assert metric_factorial["verdict"] == "completed"
@@ -165,6 +171,20 @@ def test_analyze_size_dependence_positive_hypotheses_and_factorial(tmp_path: Pat
     assert "Hypotheses" in html
     assert "Factorial Analysis" in html
     assert "OLS Regression Results" in html
+
+    pre_hypothesis, _, _ = html.partition("<h2>Hypotheses</h2>")
+    assert "Linear p-value" not in pre_hypothesis
+    assert "Two-factor model p-values" not in pre_hypothesis
+    assert "p-value t-test (ΔRMSE)" not in pre_hypothesis
+
+    assert "Distribution of ΔRMSE" in html
+    assert "Distribution of ΔR-AUC MSE" in html
+    assert "Distribution of size slopes (ΔRMSE)" in html
+    assert "Distribution of size slopes (ΔR-AUC MSE)" in html
+    assert "n_samples vs ΔRMSE (absolute size)" in html
+    assert "n_samples vs ΔR-AUC MSE (absolute size)" in html
+    assert "Delta by absolute n_samples bins" in html
+    assert "Overall significance test of mean delta across all available points" in html
 
 
 def test_analyze_size_dependence_negative_size_ratio_hypothesis(tmp_path: Path):
@@ -212,6 +232,42 @@ def test_analyze_size_dependence_insufficient_evidence_on_too_few_points(tmp_pat
     for metric_col in mod.METRICS:
         assert report["hypotheses"][metric_col]["verdict"] == "insufficient_evidence"
         assert report["factorial_analysis"]["metrics"][metric_col]["verdict"] == "insufficient_evidence"
+
+
+def test_analyze_size_dependence_handles_missing_n_samples_for_absolute_size_views(tmp_path: Path):
+    _require_statsmodels()
+    aggregated = _build_factorial_payload(
+        n_datasets=4,
+        rmse_coeffs=(0.01, 0.03, 0.18, 0.02),
+        rauc_coeffs=(0.005, 0.015, 0.10, 0.01),
+    )
+    for dataset in aggregated:
+        dataset.pop("n_samples_train", None)
+        dataset.pop("n_samples_total", None)
+        sizes = dataset.get("sizes", {})
+        assert isinstance(sizes, dict)
+        for size_data in sizes.values():
+            assert isinstance(size_data, dict)
+            size_data.pop("n_train_samples", None)
+            size_data.pop("n_samples_train", None)
+            size_data.pop("n_samples", None)
+
+    results_file = _write_results(tmp_path, aggregated)
+
+    report = mod.analyze_size_dependence(
+        results_file=results_file,
+        output_dir=tmp_path,
+        baseline="catboost",
+        min_datasets=3,
+        min_size_points=3,
+        alpha=0.05,
+    )
+
+    assert report["status"] == "completed"
+    html = (tmp_path / "size_dependence_report.html").read_text(encoding="utf-8")
+    assert "n_samples vs ΔRMSE (absolute size)" in html
+    assert "n_samples vs ΔR-AUC MSE (absolute size)" in html
+    assert "Delta by absolute n_samples bins" in html
 
 
 def test_analyze_size_dependence_raises_for_missing_baseline(tmp_path: Path):

@@ -9,10 +9,13 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 import argparse
+import json
 import yaml
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+from sklearn.neural_network import MLPClassifier
 
 from src.data.preprocess import PreprocessConfig, TabularPreprocessor
 from src.baselines.trainer import (
@@ -26,6 +29,12 @@ from src.eval.metrics import EvaluationMetrics
 from src.train.loop import TrainConfig
 from src.train.ensemble import EnsembleConfig
 from src.utils.logger import setup_logging, get_logger, log_timing, log_config, log_metrics
+from src.eval.classification_metrics import compute_classification_metrics
+from src.eval.conformal import (
+    apply_conformal_sets,
+    calibrate_multiple_levels_classification,
+    coverage_classification,
+)
 
 
 def load_yaml(path: Path) -> dict:
@@ -117,6 +126,8 @@ def main() -> None:
     X_va, y_va = pre.transform(df_valid)
     
     input_dim = X_tr.shape[1]
+    task_cfg = dict(data_cfg.get("task", {}))
+    task_type = str(task_cfg.get("type", task_cfg.get("task_type", "regression"))).lower()
     
     # Training config
     train_conf = TrainConfig(
@@ -133,6 +144,202 @@ def main() -> None:
     )
     
     results = {}
+
+    if task_type == "classification":
+        logger.info("Detected classification task for baseline comparison")
+
+        # Refit preprocessor explicitly in classification mode.
+        pre = TabularPreprocessor(pre_cfg, target_column=target_col, task_type="classification").fit(df_train)
+        X_tr, y_tr = pre.transform(df_train)
+        X_va, y_va = pre.transform(df_valid)
+        y_tr = y_tr.astype(int)
+        y_va = y_va.astype(int)
+
+        cal_path = data_cfg["paths"].get("cal_csv")
+        if cal_path:
+            df_cal = pd.read_csv(cal_path)
+            X_cal, y_cal = pre.transform(df_cal)
+            y_cal = y_cal.astype(int)
+        else:
+            X_cal, y_cal = X_va, y_va
+
+        num_classes = int(len(np.unique(y_tr)))
+        seed = int(train_cfg["training"].get("seed", 42))
+
+        def _evaluate_classifier_probs(name: str, probs_va: np.ndarray, probs_cal: np.ndarray) -> None:
+            eps = 1e-12
+            probs_va = np.clip(probs_va, eps, 1.0)
+            probs_va = probs_va / probs_va.sum(axis=1, keepdims=True)
+            probs_cal = np.clip(probs_cal, eps, 1.0)
+            probs_cal = probs_cal / probs_cal.sum(axis=1, keepdims=True)
+
+            logits_va = np.log(probs_va)
+            unc_total = 1.0 - np.max(probs_va, axis=1)
+            metrics = compute_classification_metrics(
+                y_true=y_va,
+                logits=logits_va,
+                probs=probs_va,
+                uncertainty=unc_total,
+                num_classes=num_classes,
+            )
+            result = {
+                "accuracy": float(metrics.get("accuracy", np.nan)),
+                "balanced_accuracy": float(metrics.get("balanced_accuracy", np.nan)),
+                "f1_macro": float(metrics.get("f1_macro", np.nan)),
+                "f1_weighted": float(metrics.get("f1_weighted", np.nan)),
+                "auroc": float(metrics.get("auroc", np.nan)),
+                "ece": float(metrics.get("ece", np.nan)),
+                "brier": float(metrics.get("brier", np.nan)),
+                "mean_uncertainty": float(np.mean(unc_total)),
+            }
+            conf = calibrate_multiple_levels_classification(
+                y_true_cal=y_cal,
+                probs_cal=probs_cal,
+                coverage_levels=[0.80, 0.90, 0.95],
+            )
+            for level in [0.80, 0.90, 0.95]:
+                q = conf[level]["quantile"]
+                sets = apply_conformal_sets(probs_va, q)
+                result[f"coverage@{int(level*100)}"] = float(coverage_classification(y_va, sets))
+                result[f"mean_set_size@{int(level*100)}"] = float(np.mean([len(s) for s in sets]))
+            results[name] = result
+
+        if "single_mlp" in args.baselines:
+            logger.info("Training classification baseline: single_mlp")
+            model = MLPClassifier(
+                hidden_layer_sizes=(128, 64),
+                alpha=1e-4,
+                max_iter=300,
+                random_state=seed,
+            )
+            model.fit(X_tr, y_tr)
+            _evaluate_classifier_probs(
+                "single_mlp",
+                probs_va=model.predict_proba(X_va),
+                probs_cal=model.predict_proba(X_cal),
+            )
+
+        if "flat_mtl" in args.baselines:
+            logger.info("Training classification baseline: flat_mtl")
+            model = RandomForestClassifier(
+                n_estimators=300,
+                random_state=seed,
+                n_jobs=1,
+            )
+            model.fit(X_tr, y_tr)
+            _evaluate_classifier_probs(
+                "flat_mtl",
+                probs_va=model.predict_proba(X_va),
+                probs_cal=model.predict_proba(X_cal),
+            )
+
+        if "catboost" in args.baselines:
+            logger.info("Training classification baseline: catboost")
+            try:
+                from catboost import CatBoostClassifier
+
+                model = CatBoostClassifier(
+                    iterations=700,
+                    depth=6,
+                    learning_rate=0.05,
+                    loss_function="MultiClass",
+                    eval_metric="TotalF1",
+                    random_seed=seed,
+                    verbose=False,
+                )
+                model.fit(X_tr, y_tr, eval_set=(X_va, y_va), verbose=False)
+                probs_va = model.predict_proba(X_va)
+                probs_cal = model.predict_proba(X_cal)
+            except Exception as exc:
+                logger.warning("CatBoostClassifier unavailable (%s); using HistGradientBoosting fallback", exc)
+                model = HistGradientBoostingClassifier(random_state=seed)
+                model.fit(X_tr, y_tr)
+                probs_va = model.predict_proba(X_va)
+                probs_cal = model.predict_proba(X_cal)
+            _evaluate_classifier_probs("catboost", probs_va=probs_va, probs_cal=probs_cal)
+
+        if "hmtl" in args.baselines:
+            hmtl_result = None
+            if args.hmtl_from_main:
+                hmtl_main_path = Path(args.hmtl_from_main)
+                if hmtl_main_path.exists():
+                    with open(hmtl_main_path, "r", encoding="utf-8") as f:
+                        hmtl_payload = json.load(f)
+                    m = hmtl_payload.get("metrics", hmtl_payload)
+                    hmtl_result = {
+                        "accuracy": float(m.get("val_accuracy", np.nan)),
+                        "balanced_accuracy": float(m.get("val_balanced_accuracy", np.nan)),
+                        "f1_macro": float(m.get("val_f1_macro", np.nan)),
+                        "f1_weighted": float(m.get("val_f1_weighted", np.nan)),
+                        "auroc": float(m.get("val_auroc", np.nan)),
+                        "ece": float(m.get("val_ece", np.nan)),
+                        "brier": float(m.get("val_brier", np.nan)),
+                        "mean_uncertainty": float(m.get("val_mean_uncertainty", np.nan)),
+                        "coverage@80": float(m.get("val_coverage@80", np.nan)),
+                        "coverage@90": float(m.get("val_coverage@90", np.nan)),
+                        "coverage@95": float(m.get("val_coverage@95", np.nan)),
+                        "mean_set_size@80": float(m.get("val_mean_set_size@80", np.nan)),
+                        "mean_set_size@90": float(m.get("val_mean_set_size@90", np.nan)),
+                        "mean_set_size@95": float(m.get("val_mean_set_size@95", np.nan)),
+                    }
+            if hmtl_result is not None:
+                results["hmtl"] = hmtl_result
+            else:
+                logger.warning(
+                    "Skipping HMTL classification baseline because --hmtl-from-main was not provided or invalid"
+                )
+
+        # Classification comparison table
+        comparison_data = []
+        for name, metrics in results.items():
+            comparison_data.append(
+                {
+                    "Model": name,
+                    "Accuracy": metrics.get("accuracy", np.nan),
+                    "Balanced Accuracy": metrics.get("balanced_accuracy", np.nan),
+                    "F1 Macro": metrics.get("f1_macro", np.nan),
+                    "F1 Weighted": metrics.get("f1_weighted", np.nan),
+                    "AUROC": metrics.get("auroc", np.nan),
+                    "ECE": metrics.get("ece", np.nan),
+                    "Brier": metrics.get("brier", np.nan),
+                    "Mean Uncertainty": metrics.get("mean_uncertainty", np.nan),
+                    "Coverage@80": metrics.get("coverage@80", np.nan),
+                    "Coverage@90": metrics.get("coverage@90", np.nan),
+                    "Coverage@95": metrics.get("coverage@95", np.nan),
+                    "Mean Set Size@80": metrics.get("mean_set_size@80", np.nan),
+                    "Mean Set Size@90": metrics.get("mean_set_size@90", np.nan),
+                    "Mean Set Size@95": metrics.get("mean_set_size@95", np.nan),
+                }
+            )
+        comparison_df = pd.DataFrame(comparison_data)
+
+        output_dir = Path(args.output)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        comparison_file = output_dir / "comparison_table.csv"
+        comparison_df.to_csv(comparison_file, index=False)
+        logger.info("Classification comparison table saved to %s", comparison_file)
+
+        # Basic classification baseline plot
+        if not comparison_df.empty:
+            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+            comparison_df.plot(x="Model", y="Accuracy", kind="bar", ax=axes[0, 0], legend=False)
+            axes[0, 0].set_title("Accuracy")
+            comparison_df.plot(x="Model", y="F1 Macro", kind="bar", ax=axes[0, 1], legend=False, color="orange")
+            axes[0, 1].set_title("F1 Macro")
+            comparison_df.plot(x="Model", y="ECE", kind="bar", ax=axes[1, 0], legend=False, color="green")
+            axes[1, 0].set_title("ECE (lower is better)")
+            comparison_df.plot(x="Model", y="Brier", kind="bar", ax=axes[1, 1], legend=False, color="purple")
+            axes[1, 1].set_title("Brier (lower is better)")
+            for ax in axes.flatten():
+                ax.tick_params(axis="x", rotation=45)
+            plt.tight_layout()
+            plot_file = output_dir / "baseline_comparison.png"
+            plt.savefig(plot_file, dpi=300, bbox_inches="tight")
+            plt.close()
+            logger.info("Classification comparison plot saved to %s", plot_file)
+
+        logger.info("Classification baselines completed")
+        return
     
     # Single MLP baseline
     if "single_mlp" in args.baselines:
@@ -257,7 +464,6 @@ def main() -> None:
             if hmtl_main_path.exists():
                 logger.info(f"Loading HMTL results from main experiment: {hmtl_main_path}")
                 try:
-                    import json
                     with open(hmtl_main_path) as f:
                         hmtl_from_main = json.load(f)
                     logger.info("Successfully loaded HMTL metrics from main experiment")
@@ -271,12 +477,18 @@ def main() -> None:
             logger.info("Using HMTL metrics from main experiment (no training needed)")
             metrics_dict = hmtl_from_main.get("metrics", hmtl_from_main)
             
+            def _to_float_or_nan(value):
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return np.nan
+
             results["hmtl"] = {
-                "rmse": metrics_dict.get("val_rmse", 0.0),
-                "mse": metrics_dict.get("val_mse", 0.0),
-                "mae": metrics_dict.get("val_mae", 0.0),
-                "r_auc_mse": metrics_dict.get("val_r_auc_mse", 0.0),
-                "mean_uncertainty": metrics_dict.get("val_mean_uncertainty", 0.0),
+                "rmse": _to_float_or_nan(metrics_dict.get("val_rmse")),
+                "mse": _to_float_or_nan(metrics_dict.get("val_mse")),
+                "mae": _to_float_or_nan(metrics_dict.get("val_mae")),
+                "r_auc_mse": _to_float_or_nan(metrics_dict.get("val_r_auc_mse")),
+                "mean_uncertainty": _to_float_or_nan(metrics_dict.get("val_mean_uncertainty")),
             }
             
             # Add coverage metrics if available
@@ -312,8 +524,11 @@ def main() -> None:
                         if val_metrics.get("f_beta_95") is not None:
                             results["hmtl"]["f_beta_95"] = val_metrics["f_beta_95"]
             
-            logger.info(f"HMTL (from main) - RMSE: {results['hmtl']['rmse']:.6f}, "
-                       f"R-AUC MSE: {results['hmtl']['r_auc_mse']:.6f}")
+            logger.info(
+                "HMTL (from main) - RMSE: %s, R-AUC MSE: %s",
+                results["hmtl"]["rmse"],
+                results["hmtl"]["r_auc_mse"],
+            )
             if "rejection_ratio" in results["hmtl"]:
                 logger.info(f"  Rejection Ratio: {results['hmtl']['rejection_ratio']:.2f}%")
             for level in [80, 90, 95]:
@@ -425,14 +640,14 @@ def main() -> None:
     for name, metrics in results.items():
         row = {
             "Model": name,
-            "RMSE": metrics.get("rmse", 0.0),
-            "MSE": metrics.get("mse", 0.0),
-            "MAE": metrics.get("mae", 0.0),
-            "R-AUC MSE": metrics.get("r_auc_mse", 0.0),
-            "Mean Uncertainty": metrics.get("mean_uncertainty", 0.0),
-            "Coverage@80": metrics.get("coverage@80", 0.0),
-            "Coverage@90": metrics.get("coverage@90", 0.0),
-            "Coverage@95": metrics.get("coverage@95", 0.0),
+            "RMSE": metrics.get("rmse", np.nan),
+            "MSE": metrics.get("mse", np.nan),
+            "MAE": metrics.get("mae", np.nan),
+            "R-AUC MSE": metrics.get("r_auc_mse", np.nan),
+            "Mean Uncertainty": metrics.get("mean_uncertainty", np.nan),
+            "Coverage@80": metrics.get("coverage@80", np.nan),
+            "Coverage@90": metrics.get("coverage@90", np.nan),
+            "Coverage@95": metrics.get("coverage@95", np.nan),
         }
         
         # Добавляем метрики из референсного репозитория
@@ -449,8 +664,12 @@ def main() -> None:
     # Δ относительно HMTL (если есть)
     if "hmtl" in comparison_df["Model"].values:
         hmtl_row = comparison_df[comparison_df["Model"] == "hmtl"].iloc[0]
-        comparison_df["ΔRMSE_vs_HMTL"] = comparison_df["RMSE"] - hmtl_row["RMSE"]
-        comparison_df["ΔR-AUC_vs_HMTL"] = comparison_df["R-AUC MSE"] - hmtl_row["R-AUC MSE"]
+        hmtl_rmse = hmtl_row["RMSE"]
+        hmtl_rauc = hmtl_row["R-AUC MSE"]
+        if pd.notna(hmtl_rmse):
+            comparison_df["ΔRMSE_vs_HMTL"] = comparison_df["RMSE"] - hmtl_rmse
+        if pd.notna(hmtl_rauc):
+            comparison_df["ΔR-AUC_vs_HMTL"] = comparison_df["R-AUC MSE"] - hmtl_rauc
     logger.info("\nComparison Table:")
     logger.info("\n" + comparison_df.to_string(index=False))
     
@@ -458,7 +677,11 @@ def main() -> None:
     logger.info("\nBest Models:")
     for metric in ["RMSE", "R-AUC MSE", "MAE"]:
         if metric in comparison_df.columns:
-            best_idx = comparison_df[metric].idxmin()
+            valid_metric = comparison_df[metric].dropna()
+            if valid_metric.empty:
+                logger.info(f"  {metric}: n/a")
+                continue
+            best_idx = valid_metric.idxmin()
             best_model = comparison_df.loc[best_idx, "Model"]
             best_value = comparison_df.loc[best_idx, metric]
             logger.info(f"  {metric}: {best_model} ({best_value:.6f})")
@@ -485,9 +708,6 @@ def main() -> None:
     
     # Create visualization
     try:
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-        
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
         
         # RMSE comparison
@@ -565,4 +785,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

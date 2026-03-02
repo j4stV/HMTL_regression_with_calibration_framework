@@ -327,6 +327,88 @@ ensemble:
 - Множественные уровни покрытия (80%, 90%, 95%)
 - Метрики до/после калибровки
 
+## HMTL архитектура: регрессия и классификация
+
+### Общая HMTL-архитектура
+
+- Бэкбон общий для обоих режимов: `SNNEncoder` на блоках `Linear + SELU + AlphaDropout` с LeCun initialization (`src/models/snn.py`).
+- HMTL делит энкодер на два уровня:
+  - `encoder_low(depth_low)`
+  - `encoder_high(depth_high - depth_low)`
+  - итоговая глубина равна `depth_high` (`src/models/hmtl.py`).
+- Основная голова (`task_head`) инжектируется по типу задачи:
+  - регрессия: `RegressionHead`
+  - классификация: `ClassificationHead`
+- Вспомогательная ветка подключается к low-level представлению:
+  - `AuxBinsHead` для `aux_task=bins`
+  - `ProjectionHead` для `aux_task=contrastive`
+- Типичные значения по умолчанию в `configs/model_snn.yaml`:
+  - `aux_task=contrastive`
+  - `low_layer=12`
+  - `high_layer=18`
+  - `lambda_aux=0.5`
+  - `proj_dim=50`
+
+### Регрессия
+
+- Выход модели: `(mu, sigma)`.
+- Параметризация `sigma`:
+  - `sigma = 1e-6 + softplus(raw_sigma / scale_coeff)`
+  - `scale_coeff` берется из стандартного отклонения таргета после препроцессинга.
+- Основной лосс:
+  - Gaussian NLL
+  - опционально добавляется L2-регуляризация на `sigma` через `sigma_reg_weight`.
+- При включенной aux-задаче:
+  - `loss = nll + lambda_aux * aux_loss`
+  - `aux_loss` это либо CE по бинам, либо supervised contrastive (N-pairs).
+- Бины для aux формируются квантильно; для contrastive используется отдельный режим дискретизации (включая логику для крупных датасетов).
+- Early stopping в train loop поддерживает метрики:
+  - `rmse`
+  - `r_auc_mse`
+  - `hybrid_rmse_rauc`
+- Неопределенность ансамбля:
+  - `sigma_total = sqrt(Var(mu_i) + E[sigma_i^2])`
+  - с декомпозицией на epistemic/aleatoric компоненты.
+- Conformal для регрессии:
+  - split-conformal по абсолютным residual
+  - интервалы вида `[y_pred - q, y_pred + q]`.
+- Ключевые метрики:
+  - `RMSE`, `MSE`, `MAE`
+  - `R-AUC MSE`
+  - rejection/f-beta
+  - `coverage/width` до и после calibrate.
+
+### Классификация
+
+- Используется тот же HMTL-бэкбон, но основная голова заменяется на `ClassificationHead`.
+- Выход: `logits`; при необходимости применяется learnable temperature (`logits / T`) внутри `forward`.
+- Основной лосс:
+  - `CrossEntropy` (с `class_weights`, `label_smoothing`) или
+  - `Focal loss` (`alpha`, `gamma`).
+- При включенной aux-задаче в общий loss добавляется:
+  - CE по bins или
+  - N-pairs supervised contrastive.
+- Валидационный критерий для early stopping: `NLL` по softmax-вероятностям.
+- Неопределенность ансамбля для классификации (MI decomposition):
+  - `total = H(E[p])`
+  - `aleatoric = E[H(p)]`
+  - `epistemic = total - aleatoric`.
+- Conformal для классификации:
+  - nonconformity: `1 - p(y_true | x)`
+  - prediction set: `C(x) = {y: p(y | x) >= 1 - q}`.
+- Ключевые метрики:
+  - `accuracy`, `balanced accuracy`
+  - `F1 macro/weighted`
+  - `AUROC`, `ECE`, `Brier`
+  - корреляция uncertainty-error.
+
+### Виды вспомогательных задач (aux_task)
+
+- `bins`: вспомогательная классификация по дискретизированному таргету на low-level признаках.
+- `contrastive`: supervised N-pairs на проекциях (`proj_dim`) с L2-normalized embeddings и temperature `0.5`.
+- Оба варианта применяются и в регрессии, и в классификации; меняется только источник label для aux-ветки.
+- Вес aux-задачи всегда масштабируется через `lambda_aux`/`aux_weight` в общем loss.
+
 ## Baseline модели
 
 Для сравнения реализованы следующие baseline модели:
@@ -346,3 +428,26 @@ ensemble:
 - Вес вспомогательной задачи (низкий/высокий)
 
 Скрипт `scripts/run_ablation.py` автоматически запускает все варианты и сравнивает результаты.
+
+# Адаптация конфигурации по размеру датасета
+Режим по размеру train:
+- tiny: < 256
+- small: < 2048
+- large: >= 2048
+
+Batch size адаптивный:
+- формула min(base_batch, max(16, floor(n_train_size / divisor)))
+- divisor: tiny=4, small=8, large=12
+
+HMTL конфиг по режиму:
+- tiny: урезаются слои (high<=6, low<=2), hidden_width<=64, aux_task="bins", lambda_aux<=0.2, повышается weight_decay>=1e-4
+- small: high<=10, low<=4, hidden_width<=96, aux_task="bins", lambda_aux<=0.35, weight_decay>=5e-5
+- large: aux_task="contrastive" если n_features>256, иначе "bins"
+
+Ensemble адаптация:
+- для tiny/small: bagging="stratified_bins", и ограничение n_models (<=8 / <=10)
+
+PCA политика по размеру + числу фич:
+- tiny: включается только при n_features>=64
+- small: выключается при <64, иначе включается (0.95/0.99)
+- large: выключается при <=16, условно при <=256 (только если n_train>=2000), всегда включается при >256

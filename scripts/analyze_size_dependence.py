@@ -268,6 +268,60 @@ def _effect_size(values: np.ndarray) -> float | None:
     return float(np.mean(values) / std)
 
 
+def _overall_delta_significance(values: np.ndarray, *, alpha: float) -> dict[str, Any]:
+    n_points = int(len(values))
+    result = {
+        "n_points": n_points,
+        "mean_delta": None,
+        "std_delta": None,
+        "ci_low": None,
+        "ci_high": None,
+        "t_stat": None,
+        "p_value_two_sided": None,
+        "p_value_one_sided_greater": None,
+        "verdict": "insufficient_evidence",
+    }
+    if n_points < 2:
+        return result
+
+    mean_delta = float(np.mean(values))
+    std_delta = float(np.std(values, ddof=1))
+    result["mean_delta"] = mean_delta
+    result["std_delta"] = std_delta
+
+    t_stat = None
+    p_two = None
+    try:
+        ttest = stats.ttest_1samp(values, popmean=0.0)
+        t_stat = _safe_float(ttest.statistic)
+        p_two = _safe_float(ttest.pvalue)
+    except Exception:
+        t_stat = None
+        p_two = None
+    p_one = _one_sided_greater_from_two_sided(t_stat=t_stat, p_two_sided=p_two)
+
+    result["t_stat"] = t_stat
+    result["p_value_two_sided"] = p_two
+    result["p_value_one_sided_greater"] = p_one
+
+    if np.isfinite(std_delta) and std_delta >= 0.0:
+        sem = std_delta / np.sqrt(float(n_points))
+        if sem >= 0.0:
+            try:
+                t_crit = float(stats.t.ppf(1.0 - (alpha / 2.0), df=n_points - 1))
+                if np.isfinite(t_crit):
+                    result["ci_low"] = float(mean_delta - (t_crit * sem))
+                    result["ci_high"] = float(mean_delta + (t_crit * sem))
+            except Exception:
+                pass
+
+    if p_one is not None and mean_delta > 0.0 and p_one < alpha:
+        result["verdict"] = "supported"
+    else:
+        result["verdict"] = "not_supported"
+    return result
+
+
 def _format_interval(interval: pd.Interval) -> str:
     return f"{interval.left:.0f}-{interval.right:.0f}"
 
@@ -570,6 +624,8 @@ def build_hypotheses_and_factorial_analysis(
             factorial_metric_result=factorial_metric_result,
             alpha=alpha,
         )
+        metric_values = working[metric_col].dropna().astype(float).values
+        hypotheses_metric["overall_delta"] = _overall_delta_significance(metric_values, alpha=alpha)
         hypotheses[metric_col] = hypotheses_metric
         hypotheses["verdict"][metric_col] = hypotheses_metric["verdict"]
         factorial_analysis["metrics"][metric_col] = factorial_metric_result
@@ -1093,6 +1149,277 @@ def _build_size_boxplot_figure(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def _hist_nbins(values: np.ndarray) -> int:
+    n_points = int(len(values))
+    if n_points <= 1:
+        return 1
+    return int(max(8, min(30, round(np.sqrt(float(n_points)) * 2.0))))
+
+
+def _build_delta_histogram_figure(df: pd.DataFrame) -> go.Figure:
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("Distribution of ΔRMSE", "Distribution of ΔR-AUC MSE"),
+    )
+    if not df.empty:
+        rmse_vals = pd.to_numeric(df["delta_rmse"], errors="coerce").dropna().astype(float).values
+        rauc_vals = pd.to_numeric(df["delta_r_auc_mse"], errors="coerce").dropna().astype(float).values
+        if len(rmse_vals) > 0:
+            fig.add_trace(
+                go.Histogram(
+                    x=rmse_vals,
+                    nbinsx=_hist_nbins(rmse_vals),
+                    marker_color="#0D6EFD",
+                    opacity=0.8,
+                    name="ΔRMSE",
+                ),
+                row=1,
+                col=1,
+            )
+        if len(rauc_vals) > 0:
+            fig.add_trace(
+                go.Histogram(
+                    x=rauc_vals,
+                    nbinsx=_hist_nbins(rauc_vals),
+                    marker_color="#FD7E14",
+                    opacity=0.8,
+                    name="ΔR-AUC MSE",
+                ),
+                row=1,
+                col=2,
+            )
+
+    fig.add_vline(x=0.0, line_dash="dash", line_color="#6C757D", row=1, col=1)
+    fig.add_vline(x=0.0, line_dash="dash", line_color="#6C757D", row=1, col=2)
+    fig.update_layout(
+        template="plotly_white",
+        title="Delta distributions",
+        showlegend=False,
+        bargap=0.1,
+    )
+    fig.update_xaxes(title_text="Delta", row=1, col=1)
+    fig.update_xaxes(title_text="Delta", row=1, col=2)
+    fig.update_yaxes(title_text="Count", row=1, col=1)
+    fig.update_yaxes(title_text="Count", row=1, col=2)
+    return fig
+
+
+def _extract_slope_values(size_analysis: dict[str, Any], metric_col: str) -> np.ndarray:
+    rows = size_analysis.get("slope_analysis", {}).get(metric_col, {}).get("per_dataset", [])
+    if not isinstance(rows, list) or not rows:
+        return np.array([], dtype=float)
+    frame = pd.DataFrame(rows)
+    if "slope" not in frame.columns:
+        return np.array([], dtype=float)
+    values = pd.to_numeric(frame["slope"], errors="coerce").dropna().astype(float).values
+    return values
+
+
+def _build_slope_histogram_figure(size_analysis: dict[str, Any]) -> go.Figure:
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("Distribution of size slopes (ΔRMSE)", "Distribution of size slopes (ΔR-AUC MSE)"),
+    )
+    rmse_slopes = _extract_slope_values(size_analysis, "delta_rmse")
+    rauc_slopes = _extract_slope_values(size_analysis, "delta_r_auc_mse")
+
+    if len(rmse_slopes) > 0:
+        fig.add_trace(
+            go.Histogram(
+                x=rmse_slopes,
+                nbinsx=_hist_nbins(rmse_slopes),
+                marker_color="#20C997",
+                opacity=0.8,
+                name="Slope ΔRMSE",
+            ),
+            row=1,
+            col=1,
+        )
+    if len(rauc_slopes) > 0:
+        fig.add_trace(
+            go.Histogram(
+                x=rauc_slopes,
+                nbinsx=_hist_nbins(rauc_slopes),
+                marker_color="#845EF7",
+                opacity=0.8,
+                name="Slope ΔR-AUC MSE",
+            ),
+            row=1,
+            col=2,
+        )
+
+    fig.add_vline(x=0.0, line_dash="dash", line_color="#6C757D", row=1, col=1)
+    fig.add_vline(x=0.0, line_dash="dash", line_color="#6C757D", row=1, col=2)
+    fig.update_layout(
+        template="plotly_white",
+        title="Slope distributions",
+        showlegend=False,
+        bargap=0.1,
+    )
+    fig.update_xaxes(title_text="Slope", row=1, col=1)
+    fig.update_xaxes(title_text="Slope", row=1, col=2)
+    fig.update_yaxes(title_text="Count", row=1, col=1)
+    fig.update_yaxes(title_text="Count", row=1, col=2)
+    return fig
+
+
+def _assign_absolute_size_bins(values: pd.Series, max_bins: int = 4) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    bins = pd.Series(index=values.index, dtype="object")
+    valid = numeric.dropna().astype(float)
+    if valid.empty:
+        return bins
+
+    n_unique = int(valid.nunique())
+    if n_unique <= 1:
+        value = float(valid.iloc[0])
+        bins.loc[valid.index] = f"{value:.0f}-{value:.0f}"
+        return bins
+
+    q = min(max_bins, n_unique)
+    qcut_bins = pd.qcut(valid, q=q, duplicates="drop")
+    categories = list(qcut_bins.cat.categories)
+    labels = [_format_interval(interval) for interval in categories]
+    relabeled = qcut_bins.cat.rename_categories(labels).astype(str)
+    bins.loc[valid.index] = relabeled
+    return bins
+
+
+def _build_absolute_size_scatter_figure(
+    df: pd.DataFrame,
+    *,
+    metric_col: str,
+    title: str,
+    y_title: str,
+) -> go.Figure:
+    fig = go.Figure()
+    working = df.dropna(subset=["n_samples", metric_col]).copy()
+    if working.empty:
+        return fig.update_layout(title=title, template="plotly_white")
+
+    working["n_samples"] = pd.to_numeric(working["n_samples"], errors="coerce")
+    working[metric_col] = pd.to_numeric(working[metric_col], errors="coerce")
+    working = working[np.isfinite(working["n_samples"]) & np.isfinite(working[metric_col])]
+    working = working[working["n_samples"] > 0.0]
+    if working.empty:
+        return fig.update_layout(title=title, template="plotly_white")
+
+    names = working["dataset_name"].astype(str).values
+    x_vals = working["n_samples"].astype(float).values
+    y_vals = working[metric_col].astype(float).values
+    size_ratio_vals = working["size_ratio"].astype(float).values
+    marker: dict[str, Any] = {"size": 9, "opacity": 0.82}
+    if "n_features" in working.columns and working["n_features"].notna().any():
+        feature_counts = pd.to_numeric(working["n_features"], errors="coerce").astype(float).values
+        q_low = float(np.nanpercentile(feature_counts, 10))
+        q_high = float(np.nanpercentile(feature_counts, 95))
+        if not np.isfinite(q_low):
+            q_low = float(np.nanmin(feature_counts))
+        if not np.isfinite(q_high):
+            q_high = float(np.nanmax(feature_counts))
+        if q_high <= q_low:
+            q_low = float(np.nanmin(feature_counts))
+            q_high = float(np.nanmax(feature_counts))
+        marker.update(
+            {
+                "color": feature_counts,
+                "colorscale": [
+                    [0.0, "#74C476"],
+                    [0.4, "#41AB5D"],
+                    [0.7, "#238B45"],
+                    [1.0, "#005A32"],
+                ],
+                "cmin": q_low,
+                "cmax": q_high,
+                "colorbar": {"title": "n_features"},
+                "showscale": True,
+            }
+        )
+        customdata = np.column_stack([size_ratio_vals, feature_counts])
+        hovertemplate = (
+            "Dataset=%{text}<br>n_samples=%{x:.0f}<br>"
+            "size_ratio=%{customdata[0]:.2f}<br>n_features=%{customdata[1]:.0f}<br>"
+            "value=%{y:.4f}<extra></extra>"
+        )
+    else:
+        marker["color"] = "#2F9E44"
+        customdata = np.column_stack([size_ratio_vals])
+        hovertemplate = (
+            "Dataset=%{text}<br>n_samples=%{x:.0f}<br>"
+            "size_ratio=%{customdata[0]:.2f}<br>value=%{y:.4f}<extra></extra>"
+        )
+
+    fig.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=y_vals,
+            mode="markers",
+            marker=marker,
+            text=names,
+            customdata=customdata,
+            hovertemplate=hovertemplate,
+            name="dataset-size points",
+        )
+    )
+    fig.add_hline(y=0.0, line_dash="dash", line_color="#6C757D")
+    fig.update_layout(
+        title=title,
+        xaxis_title="n_samples (log scale)",
+        yaxis_title=y_title,
+        xaxis_type="log",
+        template="plotly_white",
+    )
+    return fig
+
+
+def _build_absolute_size_boxplot_figure(df: pd.DataFrame) -> go.Figure:
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("ΔRMSE by absolute n_samples bins", "ΔR-AUC MSE by absolute n_samples bins"),
+    )
+    working = df.dropna(subset=["n_samples"]).copy()
+    if working.empty:
+        return fig.update_layout(template="plotly_white", showlegend=False, title="Delta by absolute n_samples bins")
+
+    working["n_samples"] = pd.to_numeric(working["n_samples"], errors="coerce")
+    working = working[np.isfinite(working["n_samples"]) & (working["n_samples"] > 0.0)]
+    if working.empty:
+        return fig.update_layout(template="plotly_white", showlegend=False, title="Delta by absolute n_samples bins")
+
+    working["n_samples_bin"] = _assign_absolute_size_bins(working["n_samples"])
+    working = working.dropna(subset=["n_samples_bin"])
+    if working.empty:
+        return fig.update_layout(template="plotly_white", showlegend=False, title="Delta by absolute n_samples bins")
+
+    ordered_bins = (
+        working.groupby("n_samples_bin", as_index=False)["n_samples"]
+        .min()
+        .sort_values("n_samples")
+        ["n_samples_bin"]
+        .tolist()
+    )
+    for bin_label in ordered_bins:
+        subset = working[working["n_samples_bin"] == bin_label]
+        rmse_vals = pd.to_numeric(subset["delta_rmse"], errors="coerce").dropna().astype(float).values
+        rauc_vals = pd.to_numeric(subset["delta_r_auc_mse"], errors="coerce").dropna().astype(float).values
+        if len(rmse_vals) > 0:
+            fig.add_trace(go.Box(y=rmse_vals, name=bin_label, boxmean=True), row=1, col=1)
+        if len(rauc_vals) > 0:
+            fig.add_trace(go.Box(y=rauc_vals, name=bin_label, boxmean=True), row=1, col=2)
+
+    fig.add_hline(y=0.0, line_dash="dash", line_color="#6C757D", row=1, col=1)
+    fig.add_hline(y=0.0, line_dash="dash", line_color="#6C757D", row=1, col=2)
+    fig.update_layout(
+        template="plotly_white",
+        showlegend=False,
+        title="Delta by absolute n_samples bins",
+    )
+    return fig
+
+
 def _build_feature_scatter_figure(
     dataset_feature_df: pd.DataFrame,
     *,
@@ -1135,7 +1462,13 @@ def _build_feature_scatter_figure(
         )
 
     fig.add_hline(y=0.0, line_dash="dash", line_color="#6C757D")
-    fig.update_layout(title=title, xaxis_title="n_features", yaxis_title=y_title, template="plotly_white")
+    fig.update_layout(
+        title=title,
+        xaxis_title="n_features (log scale)",
+        yaxis_title=y_title,
+        xaxis_type="log",
+        template="plotly_white",
+    )
     return fig
 
 
@@ -1208,7 +1541,13 @@ def _build_size_feature_scatter_figure(
         )
     )
     fig.add_hline(y=0.0, line_dash="dash", line_color="#6C757D")
-    fig.update_layout(title=title, xaxis_title="n_features", yaxis_title=y_title, template="plotly_white")
+    fig.update_layout(
+        title=title,
+        xaxis_title="n_features (log scale)",
+        yaxis_title=y_title,
+        xaxis_type="log",
+        template="plotly_white",
+    )
     return fig
 
 
@@ -1306,7 +1645,13 @@ def _build_slope_vs_features_figure(per_dataset_rows: list[dict[str, Any]], titl
         )
 
     fig.add_hline(y=0.0, line_dash="dash", line_color="#6C757D")
-    fig.update_layout(title=title, xaxis_title="n_features", yaxis_title=y_title, template="plotly_white")
+    fig.update_layout(
+        title=title,
+        xaxis_title="n_features (log scale)",
+        yaxis_title=y_title,
+        xaxis_type="log",
+        template="plotly_white",
+    )
     return fig
 
 
@@ -1364,145 +1709,147 @@ def generate_html_report(
     summary = report["summary"]
 
     by_size = size_analysis.get("by_size", {})
-    include_js = True
-    figure_blocks: list[str] = []
-
-    figures: list[go.Figure] = [
-        _build_size_feature_scatter_figure(
+    figures_by_key: dict[str, go.Figure] = {
+        "size_trend_rmse": _build_size_trend_figure(
+            by_size,
+            "delta_rmse",
+            "Size trend: Mean ΔRMSE",
+            "Mean ΔRMSE",
+        ),
+        "size_trend_rauc": _build_size_trend_figure(
+            by_size,
+            "delta_r_auc_mse",
+            "Size trend: Mean ΔR-AUC MSE",
+            "Mean ΔR-AUC MSE",
+        ),
+        "size_boxplot_by_ratio": _build_size_boxplot_figure(df),
+        "delta_histograms": _build_delta_histogram_figure(df),
+        "abs_size_scatter_rmse": _build_absolute_size_scatter_figure(
             df,
             metric_col="delta_rmse",
-            title="n_features vs ΔRMSE (all size ratios)",
+            title="n_samples vs ΔRMSE (absolute size)",
             y_title="ΔRMSE",
         ),
-        _build_size_feature_scatter_figure(
+        "abs_size_scatter_rauc": _build_absolute_size_scatter_figure(
             df,
             metric_col="delta_r_auc_mse",
-            title="n_features vs ΔR-AUC MSE (all size ratios)",
+            title="n_samples vs ΔR-AUC MSE (absolute size)",
             y_title="ΔR-AUC MSE",
         ),
-        _build_size_trend_figure(by_size, "delta_rmse", "Size trend: Mean ΔRMSE", "Mean ΔRMSE"),
-        _build_size_trend_figure(by_size, "delta_r_auc_mse", "Size trend: Mean ΔR-AUC MSE", "Mean ΔR-AUC MSE"),
-        _build_size_boxplot_figure(df),
-        _build_feature_scatter_figure(
+        "abs_size_boxplot": _build_absolute_size_boxplot_figure(df),
+        "feature_scatter_rmse_100": _build_feature_scatter_figure(
             dataset_feature_df,
             metric_col="mean_delta_rmse",
             title="n_features vs ΔRMSE at 100% size (per dataset)",
             y_title="ΔRMSE at 100% size",
         ),
-        _build_feature_scatter_figure(
+        "feature_scatter_rauc_100": _build_feature_scatter_figure(
             dataset_feature_df,
             metric_col="mean_delta_r_auc_mse",
             title="n_features vs ΔR-AUC MSE at 100% size (per dataset)",
             y_title="ΔR-AUC MSE at 100% size",
         ),
-        _build_feature_bin_bar_figure(feature_analysis),
-        _build_heatmap_figure(
+        "feature_bin_bar": _build_feature_bin_bar_figure(feature_analysis),
+        "size_feature_scatter_rmse": _build_size_feature_scatter_figure(
+            df,
+            metric_col="delta_rmse",
+            title="n_features vs ΔRMSE (all size ratios)",
+            y_title="ΔRMSE",
+        ),
+        "size_feature_scatter_rauc": _build_size_feature_scatter_figure(
+            df,
+            metric_col="delta_r_auc_mse",
+            title="n_features vs ΔR-AUC MSE (all size ratios)",
+            y_title="ΔR-AUC MSE",
+        ),
+        "heatmap_rmse": _build_heatmap_figure(
             joint_analysis.get("size_feature_matrix", {}).get("delta_rmse", {"values": []}),
             "Mean ΔRMSE heatmap: size × feature bin",
         ),
-        _build_heatmap_figure(
+        "heatmap_rauc": _build_heatmap_figure(
             joint_analysis.get("size_feature_matrix", {}).get("delta_r_auc_mse", {"values": []}),
             "Mean ΔR-AUC MSE heatmap: size × feature bin",
         ),
-        _build_slope_vs_features_figure(
+        "slope_vs_features_rmse": _build_slope_vs_features_figure(
             joint_analysis.get("slope_vs_features", {}).get("delta_rmse", []),
             "Size-slope(ΔRMSE) vs n_features",
             "Slope of ΔRMSE over size",
         ),
-        _build_slope_vs_features_figure(
+        "slope_vs_features_rauc": _build_slope_vs_features_figure(
             joint_analysis.get("slope_vs_features", {}).get("delta_r_auc_mse", []),
             "Size-slope(ΔR-AUC MSE) vs n_features",
             "Slope of ΔR-AUC MSE over size",
         ),
-    ]
+        "slope_histograms": _build_slope_histogram_figure(size_analysis),
+    }
 
-    for fig in figures:
-        figure_blocks.append(f"<div class='chart'>{_fig_html(fig, include_plotlyjs=include_js)}</div>")
+    figure_caption_by_key = {
+        "delta_histograms": "Distribution of ΔRMSE | Distribution of ΔR-AUC MSE",
+        "slope_histograms": "Distribution of size slopes (ΔRMSE) | Distribution of size slopes (ΔR-AUC MSE)",
+        "abs_size_scatter_rmse": "n_samples vs ΔRMSE (absolute size)",
+        "abs_size_scatter_rauc": "n_samples vs ΔR-AUC MSE (absolute size)",
+        "abs_size_boxplot": "Delta by absolute n_samples bins",
+    }
+
+    include_js = True
+    figure_html_by_key: dict[str, str] = {}
+    for key, fig in figures_by_key.items():
+        caption = figure_caption_by_key.get(key)
+        caption_html = f"<h3>{html_lib.escape(caption)}</h3>" if caption else ""
+        figure_html_by_key[key] = (
+            f"<div class='chart'>{caption_html}{_fig_html(fig, include_plotlyjs=include_js)}</div>"
+        )
         include_js = False
+
+    size_charts_html = "".join(
+        figure_html_by_key[key]
+        for key in [
+            "size_trend_rmse",
+            "size_trend_rauc",
+            "size_boxplot_by_ratio",
+            "delta_histograms",
+            "abs_size_scatter_rmse",
+            "abs_size_scatter_rauc",
+            "abs_size_boxplot",
+        ]
+    )
+    feature_charts_html = "".join(
+        figure_html_by_key[key]
+        for key in [
+            "feature_scatter_rmse_100",
+            "feature_scatter_rauc_100",
+            "feature_bin_bar",
+        ]
+    )
+    joint_charts_html = "".join(
+        figure_html_by_key[key]
+        for key in [
+            "size_feature_scatter_rmse",
+            "size_feature_scatter_rauc",
+            "heatmap_rmse",
+            "heatmap_rauc",
+            "slope_vs_features_rmse",
+            "slope_vs_features_rauc",
+            "slope_histograms",
+        ]
+    )
 
     size_rows = [
         {
             "size_pct": values.get("size_pct"),
             "n_datasets": values.get("n_datasets"),
             "mean_delta_rmse": values.get("mean_delta_rmse"),
-            "p_t_rmse": values.get("ttest_greater_rmse", {}).get("p_value"),
             "mean_delta_r_auc_mse": values.get("mean_delta_r_auc_mse"),
-            "p_t_rauc": values.get("ttest_greater_r_auc_mse", {}).get("p_value"),
         }
         for _, values in sorted(by_size.items(), key=lambda item: float(item[1]["size_ratio"]))
     ]
     for row in size_rows:
         row["size_pct"] = _fmt_float(row["size_pct"], 0)
         row["mean_delta_rmse"] = _fmt_float(row["mean_delta_rmse"])
-        row["p_t_rmse"] = _fmt_float(row["p_t_rmse"])
         row["mean_delta_r_auc_mse"] = _fmt_float(row["mean_delta_r_auc_mse"])
-        row["p_t_rauc"] = _fmt_float(row["p_t_rauc"])
-
-    feature_rel_rmse = feature_analysis.get("relationships", {}).get("delta_rmse", {})
-    feature_rel_rauc = feature_analysis.get("relationships", {}).get("delta_r_auc_mse", {})
-    joint_rel_rmse = joint_analysis.get("interaction_relationships", {}).get("delta_rmse", {})
-    joint_rel_rauc = joint_analysis.get("interaction_relationships", {}).get("delta_r_auc_mse", {})
-    joint_two_factor_rmse = joint_analysis.get("two_factor_model", {}).get("delta_rmse", {})
-    joint_two_factor_rauc = joint_analysis.get("two_factor_model", {}).get("delta_r_auc_mse", {})
-
-    feature_summary_rows = [
-        {
-            "metric": "ΔRMSE @100% size",
-            "slope": _fmt_float(feature_rel_rmse.get("linear", {}).get("slope")),
-            "slope_p": _fmt_float(feature_rel_rmse.get("linear", {}).get("p_value")),
-            "spearman_rho": _fmt_float(feature_rel_rmse.get("spearman", {}).get("rho")),
-            "spearman_p": _fmt_float(feature_rel_rmse.get("spearman", {}).get("p_value")),
-            "verdict": feature_rel_rmse.get("verdict", "insufficient_evidence"),
-        },
-        {
-            "metric": "ΔR-AUC MSE @100% size",
-            "slope": _fmt_float(feature_rel_rauc.get("linear", {}).get("slope")),
-            "slope_p": _fmt_float(feature_rel_rauc.get("linear", {}).get("p_value")),
-            "spearman_rho": _fmt_float(feature_rel_rauc.get("spearman", {}).get("rho")),
-            "spearman_p": _fmt_float(feature_rel_rauc.get("spearman", {}).get("p_value")),
-            "verdict": feature_rel_rauc.get("verdict", "insufficient_evidence"),
-        },
-    ]
-    joint_summary_rows = [
-        {
-            "metric": "ΔRMSE slope~size vs n_features",
-            "slope": _fmt_float(joint_rel_rmse.get("linear", {}).get("slope")),
-            "slope_p": _fmt_float(joint_rel_rmse.get("linear", {}).get("p_value")),
-            "spearman_rho": _fmt_float(joint_rel_rmse.get("spearman", {}).get("rho")),
-            "spearman_p": _fmt_float(joint_rel_rmse.get("spearman", {}).get("p_value")),
-            "verdict": joint_rel_rmse.get("verdict", "insufficient_evidence"),
-        },
-        {
-            "metric": "ΔR-AUC MSE slope~size vs n_features",
-            "slope": _fmt_float(joint_rel_rauc.get("linear", {}).get("slope")),
-            "slope_p": _fmt_float(joint_rel_rauc.get("linear", {}).get("p_value")),
-            "spearman_rho": _fmt_float(joint_rel_rauc.get("spearman", {}).get("rho")),
-            "spearman_p": _fmt_float(joint_rel_rauc.get("spearman", {}).get("p_value")),
-            "verdict": joint_rel_rauc.get("verdict", "insufficient_evidence"),
-        },
-    ]
-    joint_two_factor_rows = [
-        {
-            "metric": "ΔRMSE ~ log1p(n_features) + size_ratio",
-            "coef_n_features": _fmt_float(joint_two_factor_rmse.get("n_features", {}).get("coef")),
-            "p_n_features": _fmt_float(joint_two_factor_rmse.get("n_features", {}).get("p_value")),
-            "coef_size_ratio": _fmt_float(joint_two_factor_rmse.get("size_ratio", {}).get("coef")),
-            "p_size_ratio": _fmt_float(joint_two_factor_rmse.get("size_ratio", {}).get("p_value")),
-            "r_squared": _fmt_float(joint_two_factor_rmse.get("r_squared")),
-            "verdict": joint_two_factor_rmse.get("verdict", "insufficient_evidence"),
-        },
-        {
-            "metric": "ΔR-AUC MSE ~ log1p(n_features) + size_ratio",
-            "coef_n_features": _fmt_float(joint_two_factor_rauc.get("n_features", {}).get("coef")),
-            "p_n_features": _fmt_float(joint_two_factor_rauc.get("n_features", {}).get("p_value")),
-            "coef_size_ratio": _fmt_float(joint_two_factor_rauc.get("size_ratio", {}).get("coef")),
-            "p_size_ratio": _fmt_float(joint_two_factor_rauc.get("size_ratio", {}).get("p_value")),
-            "r_squared": _fmt_float(joint_two_factor_rauc.get("r_squared")),
-            "verdict": joint_two_factor_rauc.get("verdict", "insufficient_evidence"),
-        },
-    ]
 
     hypothesis_rows: list[dict[str, Any]] = []
+    overall_delta_rows: list[dict[str, Any]] = []
     factorial_overview_rows: list[dict[str, Any]] = []
     factorial_factor_rows: list[dict[str, Any]] = []
     factorial_raw_blocks: list[str] = []
@@ -1511,6 +1858,7 @@ def generate_html_report(
         metric_label = METRIC_LABELS.get(metric_col, metric_col)
         metric_hyp = hypotheses.get(metric_col, {})
         checks = metric_hyp.get("checks", {})
+        overall_delta = metric_hyp.get("overall_delta", {})
         for factor in FACTOR_LABELS:
             check = checks.get(factor, {})
             hypothesis_rows.append(
@@ -1523,6 +1871,17 @@ def generate_html_report(
                     "verdict": check.get("verdict", "insufficient_evidence").replace("_", " "),
                 }
             )
+        overall_delta_rows.append(
+            {
+                "metric": metric_label,
+                "n_points": int(overall_delta.get("n_points", 0)),
+                "mean_delta": _fmt_float(overall_delta.get("mean_delta")),
+                "ci_low": _fmt_float(overall_delta.get("ci_low")),
+                "ci_high": _fmt_float(overall_delta.get("ci_high")),
+                "p_one_sided": _fmt_float(overall_delta.get("p_value_one_sided_greater")),
+                "verdict": overall_delta.get("verdict", "insufficient_evidence").replace("_", " "),
+            }
+        )
 
         metric_factorial = factorial_analysis.get("metrics", {}).get(metric_col, {})
         significant = metric_factorial.get("significant_factors", [])
@@ -1570,9 +1929,6 @@ def generate_html_report(
                     content=html_lib.escape(raw_anova),
                 )
             )
-
-    for row in feature_summary_rows + joint_summary_rows + joint_two_factor_rows:
-        row["verdict"] = row["verdict"].replace("_", " ")
 
     feature_range = "NA"
     if not dataset_feature_df.empty:
@@ -1726,22 +2082,16 @@ def generate_html_report(
 
     <h2>Size Analysis</h2>
     <div class="section">
-      <p class="muted">This section keeps and extends the original size-dependence analysis.</p>
-      <div class="badges">
-        {_verdict_badge(size_analysis.get("verdict", {}).get("delta_rmse", "insufficient_evidence"))}
-        {_verdict_badge(size_analysis.get("verdict", {}).get("delta_r_auc_mse", "insufficient_evidence"))}
-      </div>
-      {''.join(figure_blocks[:3])}
+      <p class="muted">Visual overview of delta behavior over relative and absolute dataset sizes.</p>
+      {size_charts_html}
       {_table_html(
         size_rows,
-        ["size_pct", "n_datasets", "mean_delta_rmse", "p_t_rmse", "mean_delta_r_auc_mse", "p_t_rauc"],
+        ["size_pct", "n_datasets", "mean_delta_rmse", "mean_delta_r_auc_mse"],
         {
           "size_pct": "Size (%)",
           "n_datasets": "N datasets",
           "mean_delta_rmse": "Mean ΔRMSE",
-          "p_t_rmse": "p-value t-test (ΔRMSE)",
           "mean_delta_r_auc_mse": "Mean ΔR-AUC MSE",
-          "p_t_rauc": "p-value t-test (ΔR-AUC MSE)",
         },
       )}
     </div>
@@ -1749,59 +2099,13 @@ def generate_html_report(
     <h2>Feature Analysis</h2>
     <div class="section">
       <p class="muted">Analyzes how delta at <code>100%</code> size depends on <code>n_features</code> (solo feature effect).</p>
-      <div class="badges">
-        {_verdict_badge(feature_analysis.get("verdict", {}).get("delta_rmse", "insufficient_evidence"))}
-        {_verdict_badge(feature_analysis.get("verdict", {}).get("delta_r_auc_mse", "insufficient_evidence"))}
-      </div>
-      {''.join(figure_blocks[3:6])}
-      {_table_html(
-        feature_summary_rows,
-        ["metric", "slope", "slope_p", "spearman_rho", "spearman_p", "verdict"],
-        {
-          "metric": "Metric",
-          "slope": "Linear slope",
-          "slope_p": "Linear p-value",
-          "spearman_rho": "Spearman rho",
-          "spearman_p": "Spearman p-value",
-          "verdict": "Verdict",
-        },
-      )}
+      {feature_charts_html}
     </div>
 
     <h2>Joint Analysis</h2>
     <div class="section">
-      <p class="muted">Interaction analysis between size and feature complexity, including a two-factor linear model.</p>
-      <div class="badges">
-        {_verdict_badge(joint_analysis.get("verdict", {}).get("delta_rmse", "insufficient_evidence"))}
-        {_verdict_badge(joint_analysis.get("verdict", {}).get("delta_r_auc_mse", "insufficient_evidence"))}
-      </div>
-      {''.join(figure_blocks[6:])}
-      {_table_html(
-        joint_summary_rows,
-        ["metric", "slope", "slope_p", "spearman_rho", "spearman_p", "verdict"],
-        {
-          "metric": "Metric",
-          "slope": "Linear slope",
-          "slope_p": "Linear p-value",
-          "spearman_rho": "Spearman rho",
-          "spearman_p": "Spearman p-value",
-          "verdict": "Verdict",
-        },
-      )}
-      <p class="muted">Two-factor model p-values for <code>n_features</code> and <code>size_ratio</code> in the same regression.</p>
-      {_table_html(
-        joint_two_factor_rows,
-        ["metric", "coef_n_features", "p_n_features", "coef_size_ratio", "p_size_ratio", "r_squared", "verdict"],
-        {
-          "metric": "Metric",
-          "coef_n_features": "Coef log1p(n_features)",
-          "p_n_features": "p-value n_features",
-          "coef_size_ratio": "Coef size_ratio",
-          "p_size_ratio": "p-value size_ratio",
-          "r_squared": "R²",
-          "verdict": "Verdict",
-        },
-      )}
+      <p class="muted">Interaction visualizations across size and feature complexity.</p>
+      {joint_charts_html}
     </div>
 
     <h2>Hypotheses</h2>
@@ -1822,6 +2126,20 @@ def generate_html_report(
           "factor": "Hypothesis factor",
           "coef": "Coef",
           "t_stat": "t-stat",
+          "p_one_sided": "p-value (one-sided)",
+          "verdict": "Verdict",
+        },
+      )}
+      <p class="muted">Overall significance test of mean delta across all available points (one-sided, mean delta &gt; 0).</p>
+      {_table_html(
+        overall_delta_rows,
+        ["metric", "n_points", "mean_delta", "ci_low", "ci_high", "p_one_sided", "verdict"],
+        {
+          "metric": "Metric",
+          "n_points": "N points",
+          "mean_delta": "Mean delta",
+          "ci_low": "CI low",
+          "ci_high": "CI high",
           "p_one_sided": "p-value (one-sided)",
           "verdict": "Verdict",
         },

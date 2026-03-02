@@ -115,14 +115,27 @@ def collect_results(output_dir: Path, logger) -> Dict[str, Any]:
             baseline_plot = baseline_results_file.parent / "baseline_comparison.png"
             if baseline_plot.exists():
                 results["baselines"]["plot"] = str(baseline_plot)
-            # Find best models
-            for metric in ["RMSE", "R-AUC MSE", "MAE"]:
+            # Find best models for available metric families.
+            minimize_metrics = ["RMSE", "R-AUC MSE", "MAE", "ECE", "Brier"]
+            maximize_metrics = ["Accuracy", "Balanced Accuracy", "F1 Macro", "F1 Weighted", "AUROC"]
+            for metric in minimize_metrics:
                 if metric in df.columns:
-                    best_idx = df[metric].idxmin()
-                    results["baselines"]["best_models"][metric] = {
-                        "model": df.loc[best_idx, "Model"],
-                        "value": float(df.loc[best_idx, metric]),
-                    }
+                    valid = df[["Model", metric]].dropna(subset=[metric])
+                    if not valid.empty:
+                        best_idx = valid[metric].idxmin()
+                        results["baselines"]["best_models"][metric] = {
+                            "model": valid.loc[best_idx, "Model"],
+                            "value": float(valid.loc[best_idx, metric]),
+                        }
+            for metric in maximize_metrics:
+                if metric in df.columns:
+                    valid = df[["Model", metric]].dropna(subset=[metric])
+                    if not valid.empty:
+                        best_idx = valid[metric].idxmax()
+                        results["baselines"]["best_models"][metric] = {
+                            "model": valid.loc[best_idx, "Model"],
+                            "value": float(valid.loc[best_idx, metric]),
+                        }
         except Exception as e:
             logger.warning(f"Failed to read baseline results: {e}")
     else:
@@ -150,7 +163,7 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
     lines.append("")
     lines.append("## Executive Summary")
     lines.append("")
-    lines.append("This report summarizes the results of comprehensive experiments on Hierarchical Multi-Task Learning (HMTL) with uncertainty estimation and conformal calibration for tabular regression.")
+    lines.append("This report summarizes the results of comprehensive experiments on Hierarchical Multi-Task Learning (HMTL) with uncertainty estimation and conformal calibration for tabular tasks.")
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -170,19 +183,35 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
             except Exception:
                 return str(val)
         
+        task_type = str(metrics.get("task_type", "regression")).lower()
+
         # Core metrics table
         lines.append("### Метрики (валидация / тест)")
         lines.append("")
         lines.append("| Metric | Validation | Test |")
         lines.append("|--------|------------|------|")
-        metric_rows = [
-            ("RMSE", "val_rmse", "test_rmse"),
-            ("MAE", "val_mae", "test_mae"),
-            ("R-AUC MSE", "val_r_auc_mse", "test_r_auc_mse"),
-            ("Mean Uncertainty", "val_mean_uncertainty", "test_mean_uncertainty"),
-            ("Mean Epistemic", "val_mean_epistemic", None),
-            ("Mean Aleatoric", "val_mean_aleatoric", None),
-        ]
+        if task_type == "classification":
+            metric_rows = [
+                ("Accuracy", "val_accuracy", "test_accuracy"),
+                ("Balanced Accuracy", "val_balanced_accuracy", "test_balanced_accuracy"),
+                ("F1 (macro)", "val_f1_macro", "test_f1_macro"),
+                ("F1 (weighted)", "val_f1_weighted", "test_f1_weighted"),
+                ("AUROC", "val_auroc", "test_auroc"),
+                ("ECE", "val_ece", "test_ece"),
+                ("Brier", "val_brier", "test_brier"),
+                ("Mean Uncertainty", "val_mean_uncertainty", "test_mean_uncertainty"),
+                ("Mean Epistemic", "val_mean_epistemic", "test_mean_epistemic"),
+                ("Mean Aleatoric", "val_mean_aleatoric", "test_mean_aleatoric"),
+            ]
+        else:
+            metric_rows = [
+                ("RMSE", "val_rmse", "test_rmse"),
+                ("MAE", "val_mae", "test_mae"),
+                ("R-AUC MSE", "val_r_auc_mse", "test_r_auc_mse"),
+                ("Mean Uncertainty", "val_mean_uncertainty", "test_mean_uncertainty"),
+                ("Mean Epistemic", "val_mean_epistemic", "test_mean_epistemic"),
+                ("Mean Aleatoric", "val_mean_aleatoric", "test_mean_aleatoric"),
+            ]
         for label, val_key, test_key in metric_rows:
             lines.append(
                 f"| {label} | {fmt_val(metrics.get(val_key))} | {fmt_val(metrics.get(test_key))} |"
@@ -192,13 +221,20 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
         # Coverage & interval width
         lines.append("### Покрытие после конформной калибровки")
         lines.append("")
-        lines.append("| Level | Val Coverage | Val Width | Test Coverage | Test Width |")
+        if task_type == "classification":
+            lines.append("| Level | Val Coverage | Val Mean Set Size | Test Coverage | Test Mean Set Size |")
+        else:
+            lines.append("| Level | Val Coverage | Val Width | Test Coverage | Test Width |")
         lines.append("|-------|--------------|-----------|---------------|------------|")
         for level in [80, 90, 95]:
             cov_val = metrics.get(f"val_coverage@{level}")
-            width_val = metrics.get(f"val_width@{level}")
             cov_test = metrics.get(f"test_coverage@{level}")
-            width_test = metrics.get(f"test_width@{level}")
+            if task_type == "classification":
+                width_val = metrics.get(f"val_mean_set_size@{level}")
+                width_test = metrics.get(f"test_mean_set_size@{level}")
+            else:
+                width_val = metrics.get(f"val_width@{level}")
+                width_test = metrics.get(f"test_width@{level}")
             lines.append(
                 f"| {level}% | {fmt_val(cov_val, pct=True)} | {fmt_val(width_val)} | "
                 f"{fmt_val(cov_test, pct=True)} | {fmt_val(width_test)} |"
@@ -215,6 +251,8 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
                          f"алеаторная: {fmt_val(metrics.get('val_mean_aleatoric'))})")
             if metrics.get("test_mean_uncertainty") is not None:
                 lines.append(f"- Тестовая неопределенность: {fmt_val(metrics.get('test_mean_uncertainty'))}")
+            if task_type == "classification" and metrics.get("ensemble_avg_val_nll") is not None:
+                lines.append(f"- Средний NLL по ансамблю (val): {fmt_val(metrics.get('ensemble_avg_val_nll'))}")
             if metrics.get("ensemble_avg_r_auc_mse") is not None:
                 lines.append(f"- Средний R-AUC MSE по ансамблю: {fmt_val(metrics.get('ensemble_avg_r_auc_mse'))}")
             if metrics.get("n_models") is not None:
@@ -398,7 +436,10 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
                 lines.append(f"![CatBoost training]({get_relative_path(cb_curve)})")
                 lines.append("")
             delta_plot = baseline_dir / "baseline_delta_vs_hmtl.png"
-            if delta_plot.exists():
+            has_regression_delta_cols = (
+                "ΔRMSE_vs_HMTL" in df.columns or "ΔR-AUC_vs_HMTL" in df.columns
+            )
+            if has_regression_delta_cols and delta_plot.exists():
                 lines.append(f"![Δ vs HMTL]({get_relative_path(delta_plot)})")
                 lines.append("")
         
@@ -424,24 +465,44 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
     
     # Add key findings based on results
     if results.get("baselines") and results["baselines"].get("best_models"):
-        best_r_auc = results["baselines"]["best_models"].get("R-AUC MSE")
+        best = results["baselines"]["best_models"]
+        best_r_auc = best.get("R-AUC MSE")
         if best_r_auc:
             findings.append(f"- **Best R-AUC MSE:** {best_r_auc['model']} ({best_r_auc['value']:.6f})")
-        
-        best_rmse = results["baselines"]["best_models"].get("RMSE")
+        best_rmse = best.get("RMSE")
         if best_rmse:
             findings.append(f"- **Best RMSE:** {best_rmse['model']} ({best_rmse['value']:.6f})")
+        best_acc = best.get("Accuracy")
+        if best_acc:
+            findings.append(f"- **Best Accuracy:** {best_acc['model']} ({best_acc['value']:.6f})")
+        best_f1 = best.get("F1 Macro")
+        if best_f1:
+            findings.append(f"- **Best F1 Macro:** {best_f1['model']} ({best_f1['value']:.6f})")
+        best_ece = best.get("ECE")
+        if best_ece:
+            findings.append(f"- **Best ECE (lower is better):** {best_ece['model']} ({best_ece['value']:.6f})")
     
     if results.get("main_experiment") and results["main_experiment"].get("metrics"):
         m = results["main_experiment"]["metrics"]
-        if m.get("val_rmse") is not None:
-            findings.append(
-                f"- **HMTL (val)** RMSE {m.get('val_rmse', 0):.6f}, R-AUC MSE {m.get('val_r_auc_mse', 0):.6f}"
-            )
-        if m.get("test_rmse") is not None:
-            findings.append(
-                f"- **HMTL (test)** RMSE {m.get('test_rmse', 0):.6f}, R-AUC MSE {m.get('test_r_auc_mse', 0):.6f}"
-            )
+        task_type = str(m.get("task_type", "regression")).lower()
+        if task_type == "classification":
+            if m.get("val_accuracy") is not None:
+                findings.append(
+                    f"- **HMTL (val)** Accuracy {m.get('val_accuracy', 0):.6f}, F1-macro {m.get('val_f1_macro', 0):.6f}, ECE {m.get('val_ece', 0):.6f}"
+                )
+            if m.get("test_accuracy") is not None:
+                findings.append(
+                    f"- **HMTL (test)** Accuracy {m.get('test_accuracy', 0):.6f}, F1-macro {m.get('test_f1_macro', 0):.6f}, ECE {m.get('test_ece', 0):.6f}"
+                )
+        else:
+            if m.get("val_rmse") is not None:
+                findings.append(
+                    f"- **HMTL (val)** RMSE {m.get('val_rmse', 0):.6f}, R-AUC MSE {m.get('val_r_auc_mse', 0):.6f}"
+                )
+            if m.get("test_rmse") is not None:
+                findings.append(
+                    f"- **HMTL (test)** RMSE {m.get('test_rmse', 0):.6f}, R-AUC MSE {m.get('test_r_auc_mse', 0):.6f}"
+                )
         cov_90 = m.get("val_coverage@90")
         if cov_90 is not None:
             findings.append(f"- **Conformal coverage@90 (val):** {cov_90*100:.2f}%")
@@ -479,33 +540,53 @@ def generate_markdown_report(results: Dict[str, Any], output_file: Path, logger)
         else:
             lines.append("- Baseline models comparison:")
         
-        # Show top 3 models by R-AUC MSE if available
+        # Show top-3 ranking based on available metrics.
+        ranking_metric = None
+        ranking_order = "asc"
+        cols_to_show: list[str] = []
+        title = ""
         if "R-AUC MSE" in df.columns:
+            ranking_metric = "R-AUC MSE"
+            ranking_order = "asc"
             cols_to_show = ["Model", "R-AUC MSE", "RMSE"]
             if "Rejection Ratio (%)" in df.columns:
                 cols_to_show.append("Rejection Ratio (%)")
-            top_models = df.nsmallest(3, "R-AUC MSE")[cols_to_show]
-            lines.append("")
-            lines.append("Top 3 models by R-AUC MSE:")
-            lines.append("")
-            try:
-                lines.append(top_models.to_markdown(index=False))
-            except ImportError:
-                headers = " | ".join(cols_to_show)
-                lines.append(f"| {headers} |")
-                lines.append("|" + "|".join(["---" for _ in cols_to_show]) + "|")
-                for _, row in top_models.iterrows():
-                    values = []
-                    for col in cols_to_show:
-                        val = row[col]
-                        if isinstance(val, float):
-                            if "Ratio" in col:
-                                values.append(f"{val:.2f}")
+            title = "Top 3 models by R-AUC MSE:"
+        elif "Accuracy" in df.columns:
+            ranking_metric = "Accuracy"
+            ranking_order = "desc"
+            cols_to_show = ["Model", "Accuracy", "F1 Macro", "ECE", "Brier"]
+            title = "Top 3 models by Accuracy:"
+
+        if ranking_metric is not None:
+            rank_df = df.dropna(subset=[ranking_metric])
+            if not rank_df.empty:
+                top_models = (
+                    rank_df.nsmallest(3, ranking_metric)[cols_to_show]
+                    if ranking_order == "asc"
+                    else rank_df.nlargest(3, ranking_metric)[cols_to_show]
+                )
+                lines.append("")
+                lines.append(title)
+                lines.append("")
+                try:
+                    lines.append(top_models.to_markdown(index=False))
+                except ImportError:
+                    headers = " | ".join(cols_to_show)
+                    lines.append(f"| {headers} |")
+                    lines.append("|" + "|".join(["---" for _ in cols_to_show]) + "|")
+                    for _, row in top_models.iterrows():
+                        values = []
+                        for col in cols_to_show:
+                            val = row[col]
+                            if isinstance(val, float):
+                                if "Ratio" in col:
+                                    values.append(f"{val:.2f}")
+                                else:
+                                    values.append(f"{val:.6f}")
                             else:
-                                values.append(f"{val:.6f}")
-                        else:
-                            values.append(str(val))
-                    lines.append("| " + " | ".join(values) + " |")
+                                values.append(str(val))
+                        lines.append("| " + " | ".join(values) + " |")
     
     lines.append("")
     lines.append("### Recommendations")
@@ -716,4 +797,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

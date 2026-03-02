@@ -1,6 +1,6 @@
 task:
   type: classification
-  num_classes: 3
+  num_classes: 26
   class_weights: null
   temperature_scaling: true
   use_focal_loss: false
@@ -8,10 +8,10 @@ task:
   focal_gamma: 2.0
   label_smoothing: 0.0
 paths:
-  train_csv: data/iris/train.csv
-  valid_csv: data/iris/valid.csv
+  train_csv: data/letter/train.csv
+  valid_csv: data/letter/valid.csv
   cal_csv: null
-  test_csv: data/iris/test.csv
+  test_csv: data/letter/test.csv
   target: class
 preprocess:
   impute_const: -1.0

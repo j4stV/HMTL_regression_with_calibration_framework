@@ -864,3 +864,168 @@ def test_run_automlbenchmark_experiments_parallel_keyboard_interrupt_forces_shut
     assert isinstance(executor, _FakeExecutor)
     assert (False, True) in executor.shutdown_calls
     assert all(proc.terminated for proc in executor._processes.values())
+
+
+def test_run_size_seed_trial_retries_hmtl_with_fp16_on_bfloat16_error(monkeypatch):
+    split_payload = {
+        "preprocessor": object(),
+        "n_train_samples": 8,
+        "X_tr": np.zeros((8, 3), dtype=np.float32),
+        "y_tr": np.zeros(8, dtype=np.float32),
+        "X_va": np.zeros((4, 3), dtype=np.float32),
+        "y_va": np.zeros(4, dtype=np.float32),
+        "X_te": np.zeros((4, 3), dtype=np.float32),
+        "y_te": np.zeros(4, dtype=np.float32),
+    }
+
+    monkeypatch.setattr(
+        size_script,
+        "prepare_preprocessed_splits_for_size",
+        lambda **kwargs: split_payload,
+    )
+
+    calls = {"count": 0}
+
+    def fake_train_and_evaluate_hmtl(**kwargs):
+        calls["count"] += 1
+        amp_dtype = size_script._resolve_amp_config(kwargs["train_cfg_yaml"])["dtype"]
+        if calls["count"] == 1:
+            assert amp_dtype == "auto"
+            raise RuntimeError("Got unsupported ScalarType BFloat16")
+        assert amp_dtype == "fp16"
+        return {
+            "rmse": 1.0,
+            "mse": 1.0,
+            "mae": 1.0,
+            "r_auc_mse": 0.2,
+            "mean_uncertainty": 0.1,
+            "mean_epistemic": 0.05,
+            "mean_aleatoric": 0.05,
+            "ensemble_avg_val_score": 0.3,
+            "ensemble_avg_val_r_auc_mse": 0.3,
+        }
+
+    monkeypatch.setattr(size_script, "train_and_evaluate_hmtl", fake_train_and_evaluate_hmtl)
+
+    result = size_script.run_size_seed_trial(
+        size_ratio=0.1,
+        seed=42,
+        df_train_full=pd.DataFrame(),
+        df_valid=pd.DataFrame(),
+        df_test=pd.DataFrame(),
+        target_column="target",
+        preprocess_config=PreprocessConfig(pca_enabled=False),
+        model_cfg={
+            "encoder": {"hidden_width": 16, "alpha_dropout": 0.0},
+            "hmtl": {
+                "low_layer": 2,
+                "high_layer": 4,
+                "n_bins": 3,
+                "lambda_aux": 0.5,
+                "enabled": True,
+                "aux_task": "bins",
+                "proj_dim": 8,
+            },
+        },
+        train_cfg_yaml={
+            "optimizer": {"lr": 1e-3, "name": "adamw"},
+            "training": {
+                "epochs": 1,
+                "batch_size": 8,
+                "early_stop": {"patience": 1},
+                "amp": {"enabled": True, "dtype": "auto", "eval_enabled": True},
+            },
+        },
+        ensemble_cfg_yaml={"ensemble": {"n_models": 2, "bagging": "bootstrap"}},
+        baselines=[],
+        show_inner_progress=False,
+    )
+
+    assert calls["count"] == 2
+    assert result["status"] == "ok"
+    assert result["hmtl"]["rmse"] == 1.0
+    assert result["amp_dtype_fallback"]["from"] == "auto"
+    assert result["amp_dtype_fallback"]["to"] == "fp16"
+
+
+def test_run_size_seed_trial_retries_hmtl_with_amp_disabled_after_fp16_bfloat16_error(monkeypatch):
+    split_payload = {
+        "preprocessor": object(),
+        "n_train_samples": 8,
+        "X_tr": np.zeros((8, 3), dtype=np.float32),
+        "y_tr": np.zeros(8, dtype=np.float32),
+        "X_va": np.zeros((4, 3), dtype=np.float32),
+        "y_va": np.zeros(4, dtype=np.float32),
+        "X_te": np.zeros((4, 3), dtype=np.float32),
+        "y_te": np.zeros(4, dtype=np.float32),
+    }
+
+    monkeypatch.setattr(
+        size_script,
+        "prepare_preprocessed_splits_for_size",
+        lambda **kwargs: split_payload,
+    )
+
+    calls = {"count": 0}
+
+    def fake_train_and_evaluate_hmtl(**kwargs):
+        calls["count"] += 1
+        amp_cfg = size_script._resolve_amp_config(kwargs["train_cfg_yaml"])
+        if calls["count"] == 1:
+            assert amp_cfg["enabled"] is True
+            assert amp_cfg["dtype"] == "fp16"
+            raise RuntimeError("Got unsupported ScalarType BFloat16")
+        assert amp_cfg["enabled"] is False
+        return {
+            "rmse": 1.0,
+            "mse": 1.0,
+            "mae": 1.0,
+            "r_auc_mse": 0.2,
+            "mean_uncertainty": 0.1,
+            "mean_epistemic": 0.05,
+            "mean_aleatoric": 0.05,
+            "ensemble_avg_val_score": 0.3,
+            "ensemble_avg_val_r_auc_mse": 0.3,
+        }
+
+    monkeypatch.setattr(size_script, "train_and_evaluate_hmtl", fake_train_and_evaluate_hmtl)
+
+    result = size_script.run_size_seed_trial(
+        size_ratio=0.1,
+        seed=42,
+        df_train_full=pd.DataFrame(),
+        df_valid=pd.DataFrame(),
+        df_test=pd.DataFrame(),
+        target_column="target",
+        preprocess_config=PreprocessConfig(pca_enabled=False),
+        model_cfg={
+            "encoder": {"hidden_width": 16, "alpha_dropout": 0.0},
+            "hmtl": {
+                "low_layer": 2,
+                "high_layer": 4,
+                "n_bins": 3,
+                "lambda_aux": 0.5,
+                "enabled": True,
+                "aux_task": "bins",
+                "proj_dim": 8,
+            },
+        },
+        train_cfg_yaml={
+            "optimizer": {"lr": 1e-3, "name": "adamw"},
+            "training": {
+                "epochs": 1,
+                "batch_size": 8,
+                "early_stop": {"patience": 1},
+                "amp": {"enabled": True, "dtype": "fp16", "eval_enabled": True},
+            },
+        },
+        ensemble_cfg_yaml={"ensemble": {"n_models": 2, "bagging": "bootstrap"}},
+        baselines=[],
+        show_inner_progress=False,
+    )
+
+    assert calls["count"] == 2
+    assert result["status"] == "ok"
+    assert result["hmtl"]["rmse"] == 1.0
+    assert result["amp_dtype_fallback"]["from"] == "fp16"
+    assert result["amp_dtype_fallback"]["to"] == "amp_disabled"

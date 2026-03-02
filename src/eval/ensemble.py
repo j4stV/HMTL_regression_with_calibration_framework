@@ -120,6 +120,17 @@ def _autocast_if_needed(enabled: bool, dtype: torch.dtype | None):
     return nullcontext()
 
 
+def _to_numpy_compatible(tensor: torch.Tensor) -> np.ndarray:
+    """Convert tensor to a NumPy-compatible CPU array.
+
+    NumPy does not support torch.bfloat16 tensors directly.
+    """
+    cpu_tensor = tensor.detach().cpu()
+    if cpu_tensor.dtype == torch.bfloat16:
+        cpu_tensor = cpu_tensor.to(dtype=torch.float32)
+    return cpu_tensor.numpy()
+
+
 def ensemble_predict(
     models: List[HMTLModel],
     X: np.ndarray,
@@ -183,8 +194,8 @@ def ensemble_predict(
             else:
                 # HMTL models with aux task
                 mu, sigma, _ = output
-            mus.append(mu.cpu().numpy().ravel())
-            sigmas.append(sigma.cpu().numpy().ravel())
+            mus.append(_to_numpy_compatible(mu.float()).ravel())
+            sigmas.append(_to_numpy_compatible(sigma.float()).ravel())
     
     # Stack predictions: shape (n_models, n_samples)
     mus_array = np.stack(mus, axis=0)  # (n_models, n_samples)
@@ -351,7 +362,7 @@ def ensemble_predict_classification(
             if not isinstance(logits, torch.Tensor):
                 raise ValueError(f"Expected logits to be torch.Tensor, got {type(logits)}")
 
-            logits_np = logits.cpu().numpy()
+            logits_np = _to_numpy_compatible(logits.float())
             probs_np = softmax(logits_np, axis=-1)
 
             logits_list.append(logits_np)

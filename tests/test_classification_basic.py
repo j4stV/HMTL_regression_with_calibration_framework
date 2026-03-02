@@ -145,6 +145,18 @@ def test_conformal_classification():
     assert 0 <= cov <= 1
 
 
+def test_conformal_classification_small_calibration_set_high_coverage():
+    """Quantile level must stay in [0, 1] for small calibration sets."""
+    n_samples = 16
+    n_classes = 3
+    y_cal = np.random.randint(0, n_classes, n_samples)
+    probs_cal = np.random.dirichlet(np.ones(n_classes), n_samples)
+
+    # alpha=0.05 (95% coverage) previously produced q_level > 1 for n=16.
+    q = split_conformal_classification(y_cal, probs_cal, alpha=0.05)
+    assert 0 <= q <= 1
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_ensemble_predict_classification_gpu():
     """Test ensemble prediction on GPU."""

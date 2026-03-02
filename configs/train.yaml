@@ -5,6 +5,12 @@ optimizer:
   lookahead_slow_step: 0.5  
   weight_decay: 0.0  # No weight decay 
 
+# Compatibility fallback for older runners that read top-level AMP config.
+amp:
+  enabled: true
+  dtype: fp16
+  eval_enabled: true
+
 training:
   seed: 42
   epochs: 1000
@@ -12,7 +18,7 @@ training:
   sigma_reg_weight: 0.0  # Disabled
   amp:
     enabled: true
-    dtype: auto  # auto = bf16 if supported on CUDA, otherwise fp16
+    dtype: fp16
     eval_enabled: true
   early_stop:
     metric: r_auc_mse

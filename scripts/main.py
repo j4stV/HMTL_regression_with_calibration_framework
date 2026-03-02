@@ -63,14 +63,19 @@ def run_experiment(
         log_config(model_cfg, logger, "Model config")
         log_config(train_cfg, logger, "Training config")
 
-    # Determine task type from configuration
-    task_cfg_dict = data_cfg.get("task", {"type": "regression"})
-    task_type = task_cfg_dict.get("type", "regression")
+    # Determine task type from configuration.
+    # Support both `type` (used in YAML configs) and `task_type` (dataclass field).
+    task_cfg_dict = dict(data_cfg.get("task", {"type": "regression"}))
+    task_type = task_cfg_dict.get("type", task_cfg_dict.get("task_type", "regression"))
     logger.info(f"Task type: {task_type}")
 
     # Create task configuration
     if task_type == "classification":
         from src.tasks.classification import ClassificationTask, ClassificationTaskConfig
+        if "type" in task_cfg_dict and "task_type" not in task_cfg_dict:
+            task_cfg_dict["task_type"] = task_cfg_dict.pop("type")
+        else:
+            task_cfg_dict.pop("type", None)
         task_config = ClassificationTaskConfig(**task_cfg_dict)
         logger.info(f"Classification task: {task_config.num_classes} classes")
         if task_config.use_focal_loss:
@@ -171,6 +176,20 @@ def run_experiment(
     input_dim = X_tr.shape[1]
     logger.info(f"Model input dimension: {input_dim}")
     
+    configured_n_bins = int(model_cfg["hmtl"]["n_bins"])
+    resolved_n_bins = configured_n_bins
+    resolved_aux_task = str(model_cfg["hmtl"].get("aux_task", "contrastive"))
+    if task_type == "classification" and resolved_aux_task == "bins":
+        min_required_bins = int(task_config.num_classes)
+        if resolved_n_bins < min_required_bins:
+            logger.warning(
+                "HMTL bins aux task requires n_bins >= num_classes for classification. "
+                "Overriding n_bins from %d to %d.",
+                resolved_n_bins,
+                min_required_bins,
+            )
+            resolved_n_bins = min_required_bins
+
     def build_model() -> HMTLModel:
         # Create task-specific head
         hidden_width = int(model_cfg["encoder"]["hidden_width"])
@@ -191,10 +210,10 @@ def run_experiment(
             depth_low=int(model_cfg["hmtl"]["low_layer"]),
             depth_high=int(model_cfg["hmtl"]["high_layer"]),
             alpha_dropout=float(model_cfg["encoder"]["alpha_dropout"]),
-            n_bins=int(model_cfg["hmtl"]["n_bins"]),
+            n_bins=resolved_n_bins,
             aux_weight=float(model_cfg["hmtl"]["lambda_aux"]),
             enable_aux=bool(model_cfg["hmtl"]["enabled"]),
-            aux_task=str(model_cfg["hmtl"].get("aux_task", "contrastive")),  # Default to contrastive
+            aux_task=resolved_aux_task,  # Default to contrastive
             proj_dim=int(model_cfg["hmtl"].get("proj_dim", 50)),  # Default 50
             scale_coeff=scale_coeff,
             task_head=task_head,  # NEW: inject task head
@@ -204,7 +223,7 @@ def run_experiment(
     logger.info(f"  Hidden width: {model_cfg['encoder']['hidden_width']}")
     logger.info(f"  Depth (low/high): {model_cfg['hmtl']['low_layer']}/{model_cfg['hmtl']['high_layer']}")
     logger.info(f"  Alpha dropout: {model_cfg['encoder']['alpha_dropout']}")
-    logger.info(f"  N bins: {model_cfg['hmtl']['n_bins']}")
+    logger.info(f"  N bins: {resolved_n_bins} (configured: {configured_n_bins})")
     logger.info(f"  Auxiliary weight: {model_cfg['hmtl']['lambda_aux']}")
     logger.info(f"  Auxiliary enabled: {model_cfg['hmtl']['enabled']}")
 
@@ -216,6 +235,17 @@ def run_experiment(
         task_loss = None  # Will use default gaussian_nll
         task_metrics = None
 
+    requested_optimizer = str(train_cfg["optimizer"].get("name", "radam_lookahead"))
+    effective_optimizer = requested_optimizer
+    if task_type == "classification" and requested_optimizer == "radam_lookahead":
+        effective_optimizer = "adamw"
+        logger.warning(
+            "Optimizer '%s' is unstable for current classification setup; "
+            "overriding to '%s'.",
+            requested_optimizer,
+            effective_optimizer,
+        )
+
     amp_cfg = train_cfg.get("training", {}).get("amp", {})
     train_conf = TrainConfig(
         lr=float(train_cfg["optimizer"]["lr"]),
@@ -223,7 +253,7 @@ def run_experiment(
         batch_size=int(train_cfg["training"]["batch_size"]),
         patience=int(train_cfg["training"]["early_stop"]["patience"]) if train_cfg["training"].get("early_stop") else 10,
         aux_weight=float(model_cfg["hmtl"]["lambda_aux"]),
-        optimizer=str(train_cfg["optimizer"].get("name", "radam_lookahead")),
+        optimizer=effective_optimizer,
         lookahead_k=int(train_cfg["optimizer"].get("lookahead_sync_period", 6)),
         lookahead_alpha=float(train_cfg["optimizer"].get("lookahead_slow_step", 0.5)),
         weight_decay=float(train_cfg["optimizer"].get("weight_decay", 0.0)),
@@ -250,7 +280,7 @@ def run_experiment(
         y_tr,
         X_va,
         y_va,
-        n_bins=int(model_cfg["hmtl"]["n_bins"]),
+        n_bins=resolved_n_bins,
         ens_cfg=ens_conf,
         train_cfg=train_conf,
         task_loss=task_loss,  # NEW

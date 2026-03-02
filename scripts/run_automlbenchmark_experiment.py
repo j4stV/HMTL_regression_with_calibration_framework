@@ -398,6 +398,16 @@ def prepare_preprocessed_splits_for_size(
     }
 
 
+def _build_catboost_preprocess_config(base_config: PreprocessConfig) -> PreprocessConfig:
+    """Use only minimal preprocessing for CatBoost while preserving target scaling."""
+    cfg = copy.deepcopy(base_config)
+    cfg.use_dynamic_binning = False
+    cfg.quantile_binning_enabled = False
+    cfg.standardize = False
+    cfg.pca_enabled = False
+    return cfg
+
+
 def _metrics_to_dict(metrics: EvaluationMetrics) -> dict[str, float]:
     return {
         "rmse": float(metrics.rmse),
@@ -447,6 +457,63 @@ def _compute_delta_vs_hmtl(baseline_metrics: dict[str, float], hmtl_metrics: dic
     }
 
 
+def _is_bfloat16_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "bfloat16" in message or "scalartype bfloat16" in message
+
+
+def _resolve_amp_config(train_cfg_yaml: dict[str, Any]) -> dict[str, Any]:
+    """Resolve AMP config with support for both legacy and nested layouts.
+
+    Preferred layout is `training.amp`. Legacy top-level `amp` is still supported.
+    """
+    training_amp = train_cfg_yaml.get("training", {}).get("amp", {})
+    root_amp = train_cfg_yaml.get("amp", {})
+    amp_cfg = training_amp if isinstance(training_amp, dict) and training_amp else root_amp
+    if not isinstance(amp_cfg, dict):
+        amp_cfg = {}
+
+    enabled = bool(amp_cfg.get("enabled", True))
+    dtype = str(amp_cfg.get("dtype", "auto"))
+    eval_enabled = bool(amp_cfg.get("eval_enabled", enabled))
+    return {
+        "enabled": enabled,
+        "dtype": dtype,
+        "eval_enabled": eval_enabled,
+    }
+
+
+def _clone_train_cfg_with_fp16_amp(train_cfg_yaml: dict[str, Any]) -> dict[str, Any]:
+    cloned = copy.deepcopy(train_cfg_yaml)
+    # Write both locations so old/new readers both see fp16.
+    top_level_amp = cloned.setdefault("amp", {})
+    if isinstance(top_level_amp, dict):
+        top_level_amp["enabled"] = True
+        top_level_amp["dtype"] = "fp16"
+        top_level_amp["eval_enabled"] = True
+    training_amp = cloned.setdefault("training", {}).setdefault("amp", {})
+    if isinstance(training_amp, dict):
+        training_amp["enabled"] = True
+        training_amp["dtype"] = "fp16"
+        training_amp["eval_enabled"] = True
+    return cloned
+
+
+def _clone_train_cfg_with_amp_disabled(train_cfg_yaml: dict[str, Any]) -> dict[str, Any]:
+    cloned = copy.deepcopy(train_cfg_yaml)
+    top_level_amp = cloned.setdefault("amp", {})
+    if isinstance(top_level_amp, dict):
+        top_level_amp["enabled"] = False
+        top_level_amp["dtype"] = "fp16"
+        top_level_amp["eval_enabled"] = False
+    training_amp = cloned.setdefault("training", {}).setdefault("amp", {})
+    if isinstance(training_amp, dict):
+        training_amp["enabled"] = False
+        training_amp["dtype"] = "fp16"
+        training_amp["eval_enabled"] = False
+    return cloned
+
+
 def _build_hmtl_model_builder(
     *,
     input_dim: int,
@@ -490,6 +557,10 @@ def train_and_evaluate_hmtl(
 ) -> dict[str, float]:
     logger = get_logger("automlbenchmark")
     early_stop_metric, hybrid_weight = _resolve_regression_early_stop_settings(train_cfg_yaml)
+    amp_cfg = _resolve_amp_config(train_cfg_yaml)
+    amp_enabled = bool(amp_cfg["enabled"])
+    amp_dtype = str(amp_cfg["dtype"])
+    amp_eval_enabled = bool(amp_cfg["eval_enabled"])
 
     train_cfg = TrainConfig(
         lr=float(train_cfg_yaml["optimizer"]["lr"]),
@@ -505,6 +576,9 @@ def train_and_evaluate_hmtl(
         seed=seed,
         task_type="regression",
         show_progress=show_inner_progress,
+        amp_enabled=amp_enabled,
+        amp_dtype=amp_dtype,
+        amp_eval_enabled=amp_eval_enabled,
         early_stop_metric=early_stop_metric,
         hybrid_r_auc_weight=hybrid_weight,
     )
@@ -580,6 +654,11 @@ def train_and_evaluate_baseline(
     show_inner_progress: bool = True,
 ) -> dict[str, float]:
     early_stop_metric, hybrid_weight = _resolve_regression_early_stop_settings(train_cfg_yaml)
+    amp_cfg = _resolve_amp_config(train_cfg_yaml)
+    amp_enabled = bool(amp_cfg["enabled"])
+    amp_dtype = str(amp_cfg["dtype"])
+    amp_eval_enabled = bool(amp_cfg["eval_enabled"])
+
     train_cfg = TrainConfig(
         lr=float(train_cfg_yaml["optimizer"]["lr"]),
         epochs=int(train_cfg_yaml["training"]["epochs"]),
@@ -594,6 +673,9 @@ def train_and_evaluate_baseline(
         seed=seed,
         task_type="regression",
         show_progress=show_inner_progress,
+        amp_enabled=amp_enabled,
+        amp_dtype=amp_dtype,
+        amp_eval_enabled=amp_eval_enabled,
         early_stop_metric=early_stop_metric,
         hybrid_r_auc_weight=hybrid_weight,
     )
@@ -673,6 +755,7 @@ def run_size_seed_trial(
     train_cfg_yaml: dict[str, Any],
     ensemble_cfg_yaml: dict[str, Any],
     baselines: list[str],
+    skip_hmtl: bool = False,
     show_inner_progress: bool = True,
 ) -> dict[str, Any]:
     logger = get_logger("automlbenchmark")
@@ -687,52 +770,132 @@ def run_size_seed_trial(
         size_ratio=size_ratio,
         seed=seed,
     )
+    catboost_split: dict[str, Any] | None = None
+    if "catboost" in baselines:
+        catboost_split = prepare_preprocessed_splits_for_size(
+            df_train_full=df_train_full,
+            df_valid=df_valid,
+            df_test=df_test,
+            target_column=target_column,
+            preprocess_config=_build_catboost_preprocess_config(preprocess_config),
+            size_ratio=size_ratio,
+            seed=seed,
+        )
 
     result: dict[str, Any] = {
         "seed": int(seed),
         "status": "ok",
         "n_train_samples": int(split["n_train_samples"]),
         "hmtl": None,
+        "hmtl_skipped": bool(skip_hmtl),
         "baselines": {},
         "delta_vs_hmtl": {},
         "ensemble_val_metric": early_stop_metric,
         "ensemble_avg_val_score": None,
     }
 
-    try:
-        hmtl_metrics = train_and_evaluate_hmtl(
-            X_tr=split["X_tr"],
-            y_tr=split["y_tr"],
-            X_va=split["X_va"],
-            y_va=split["y_va"],
-            X_te=split["X_te"],
-            y_te=split["y_te"],
-            preprocessor=split["preprocessor"],
-            model_cfg=model_cfg,
-            train_cfg_yaml=train_cfg_yaml,
-            ensemble_cfg_yaml=ensemble_cfg_yaml,
-            seed=seed,
-            show_inner_progress=show_inner_progress,
-        )
-        result["hmtl"] = hmtl_metrics
-        if "ensemble_avg_val_score" in hmtl_metrics:
-            result["ensemble_avg_val_score"] = float(hmtl_metrics["ensemble_avg_val_score"])
-    except Exception as exc:
-        logger.error("HMTL failed for size %.0f%% seed %d: %s", size_ratio * 100, seed, exc)
-        result["status"] = "failed"
-        result["error"] = f"HMTL failed: {exc}"
-        return result
-
-    for baseline_name in baselines:
+    hmtl_metrics: dict[str, float] | None = None
+    if not skip_hmtl:
         try:
-            baseline_metrics = train_and_evaluate_baseline(
-                baseline_name=baseline_name,
+            hmtl_metrics = train_and_evaluate_hmtl(
                 X_tr=split["X_tr"],
                 y_tr=split["y_tr"],
                 X_va=split["X_va"],
                 y_va=split["y_va"],
                 X_te=split["X_te"],
                 y_te=split["y_te"],
+                preprocessor=split["preprocessor"],
+                model_cfg=model_cfg,
+                train_cfg_yaml=train_cfg_yaml,
+                ensemble_cfg_yaml=ensemble_cfg_yaml,
+                seed=seed,
+                show_inner_progress=show_inner_progress,
+            )
+            result["hmtl"] = hmtl_metrics
+            if "ensemble_avg_val_score" in hmtl_metrics:
+                result["ensemble_avg_val_score"] = float(hmtl_metrics["ensemble_avg_val_score"])
+        except Exception as exc:
+            amp_cfg = _resolve_amp_config(train_cfg_yaml)
+            requested_amp_dtype = str(amp_cfg.get("dtype", "auto")).strip().lower()
+            is_bf16_issue = _is_bfloat16_error(exc)
+            if not is_bf16_issue:
+                logger.exception(
+                    "HMTL failed for size %.0f%% seed %d: %s",
+                    size_ratio * 100,
+                    seed,
+                    exc,
+                )
+                result["status"] = "failed"
+                result["error"] = f"HMTL failed: {exc}"
+                return result
+
+            retry_candidates: list[tuple[str, dict[str, Any]]] = []
+            if requested_amp_dtype in {"auto", "bf16"}:
+                retry_candidates.append(("fp16", _clone_train_cfg_with_fp16_amp(train_cfg_yaml)))
+            retry_candidates.append(("amp_disabled", _clone_train_cfg_with_amp_disabled(train_cfg_yaml)))
+
+            last_exc: Exception = exc
+            for retry_mode, retry_train_cfg_yaml in retry_candidates:
+                logger.warning(
+                    "HMTL hit BFloat16 incompatibility for size %.0f%% seed %d "
+                    "(requested_amp_dtype=%s). Retrying with %s.",
+                    size_ratio * 100,
+                    seed,
+                    requested_amp_dtype,
+                    retry_mode,
+                )
+                try:
+                    hmtl_metrics = train_and_evaluate_hmtl(
+                        X_tr=split["X_tr"],
+                        y_tr=split["y_tr"],
+                        X_va=split["X_va"],
+                        y_va=split["y_va"],
+                        X_te=split["X_te"],
+                        y_te=split["y_te"],
+                        preprocessor=split["preprocessor"],
+                        model_cfg=model_cfg,
+                        train_cfg_yaml=retry_train_cfg_yaml,
+                        ensemble_cfg_yaml=ensemble_cfg_yaml,
+                        seed=seed,
+                        show_inner_progress=show_inner_progress,
+                    )
+                    result["hmtl"] = hmtl_metrics
+                    if "ensemble_avg_val_score" in hmtl_metrics:
+                        result["ensemble_avg_val_score"] = float(hmtl_metrics["ensemble_avg_val_score"])
+                    result["amp_dtype_fallback"] = {
+                        "from": requested_amp_dtype,
+                        "to": retry_mode,
+                        "reason": str(exc),
+                    }
+                    break
+                except Exception as retry_exc:
+                    last_exc = retry_exc
+            else:
+                logger.exception(
+                    "HMTL failed after AMP fallbacks for size %.0f%% seed %d: %s",
+                    size_ratio * 100,
+                    seed,
+                    last_exc,
+                )
+                result["status"] = "failed"
+                result["error"] = f"HMTL failed after AMP fallbacks: {last_exc}"
+                return result
+
+    for baseline_name in baselines:
+        try:
+            baseline_split = (
+                catboost_split
+                if baseline_name == "catboost" and catboost_split is not None
+                else split
+            )
+            baseline_metrics = train_and_evaluate_baseline(
+                baseline_name=baseline_name,
+                X_tr=baseline_split["X_tr"],
+                y_tr=baseline_split["y_tr"],
+                X_va=baseline_split["X_va"],
+                y_va=baseline_split["y_va"],
+                X_te=baseline_split["X_te"],
+                y_te=baseline_split["y_te"],
                 model_cfg=model_cfg,
                 train_cfg_yaml=train_cfg_yaml,
                 ensemble_cfg_yaml=ensemble_cfg_yaml,
@@ -740,10 +903,11 @@ def run_size_seed_trial(
                 show_inner_progress=show_inner_progress,
             )
             result["baselines"][baseline_name] = baseline_metrics
-            result["delta_vs_hmtl"][baseline_name] = _compute_delta_vs_hmtl(
-                baseline_metrics,
-                hmtl_metrics,
-            )
+            if isinstance(hmtl_metrics, dict):
+                result["delta_vs_hmtl"][baseline_name] = _compute_delta_vs_hmtl(
+                    baseline_metrics,
+                    hmtl_metrics,
+                )
         except Exception as exc:
             logger.error(
                 "Baseline %s failed for size %.0f%% seed %d: %s",
@@ -755,6 +919,16 @@ def run_size_seed_trial(
             result["baselines"][baseline_name] = {"error": str(exc)}
             result["delta_vs_hmtl"][baseline_name] = {"error": str(exc)}
 
+    if skip_hmtl and baselines:
+        n_successful_baselines = sum(
+            1
+            for metrics in result["baselines"].values()
+            if isinstance(metrics, dict) and "error" not in metrics
+        )
+        if n_successful_baselines == 0:
+            result["status"] = "failed"
+            result["error"] = "All baselines failed while HMTL was skipped."
+
     return result
 
 
@@ -765,6 +939,7 @@ def aggregate_size_seed_runs(
 ) -> dict[str, Any]:
     n_requested = len(per_seed_runs)
 
+    successful_runs = [run for run in per_seed_runs if run.get("status") == "ok"]
     hmtl_success_runs = [run for run in per_seed_runs if run.get("status") == "ok" and isinstance(run.get("hmtl"), dict)]
     failed_seeds = [int(run["seed"]) for run in per_seed_runs if run.get("status") != "ok"]
 
@@ -781,7 +956,7 @@ def aggregate_size_seed_runs(
         baseline_success = []
         baseline_delta_success = []
 
-        for run in hmtl_success_runs:
+        for run in successful_runs:
             baseline_metrics = run.get("baselines", {}).get(baseline_name)
             if isinstance(baseline_metrics, dict) and "error" not in baseline_metrics:
                 baseline_success.append(baseline_metrics)
@@ -806,7 +981,8 @@ def aggregate_size_seed_runs(
 
     aggregate_over_seeds = {
         "n_requested": int(n_requested),
-        "n_successful": int(len(hmtl_success_runs)),
+        "n_successful": int(len(successful_runs)),
+        "n_successful_hmtl": int(len(hmtl_success_runs)),
         "failed_seeds": failed_seeds,
         "hmtl": hmtl_agg,
         "baselines": baselines_agg,
@@ -814,7 +990,7 @@ def aggregate_size_seed_runs(
     }
 
     size_summary: dict[str, Any] = {
-        "status": "ok" if hmtl_success_runs else "failed",
+        "status": "ok" if successful_runs else "failed",
         "aggregate_over_seeds": aggregate_over_seeds,
         "hmtl": hmtl_means,
         "baselines": baselines_means,
@@ -848,6 +1024,7 @@ def run_single_dataset_experiment(
     val_ratio: float,
     test_ratio: float,
     baselines: list[str],
+    skip_hmtl: bool,
     split_seed: int,
     output_dir: Path,
     study_id: int,
@@ -894,6 +1071,7 @@ def run_single_dataset_experiment(
             "n_requested_seeds": int(len(seeds)),
             "sizes": [float(s) for s in sizes],
             "baselines": baselines,
+            "hmtl_enabled": bool(not skip_hmtl),
             "configs": config_paths,
             "split": {
                 "train_ratio": float(train_ratio),
@@ -966,6 +1144,7 @@ def run_single_dataset_experiment(
                     train_cfg_yaml=effective_train_cfg_yaml,
                     ensemble_cfg_yaml=effective_ensemble_cfg_yaml,
                     baselines=baselines,
+                    skip_hmtl=skip_hmtl,
                     show_inner_progress=show_inner_progress,
                 )
                 seed_result["adaptive_policy"] = copy.deepcopy(adaptive_policy_meta)
@@ -1175,10 +1354,14 @@ def run_automlbenchmark_experiments(
     train_ratio: float,
     val_ratio: float,
     test_ratio: float,
+    skip_hmtl: bool = False,
+    skip_baselines: bool = False,
     high_level_progress_only: bool = False,
 ) -> list[dict[str, Any]]:
     logger = get_logger("automlbenchmark")
 
+    if skip_baselines:
+        baselines = []
     baselines = [baseline.strip().lower() for baseline in baselines]
     baselines = list(dict.fromkeys(baselines))
 
@@ -1206,7 +1389,10 @@ def run_automlbenchmark_experiments(
 
     seed_list = _resolve_seed_list(base_seed=seed, seeds=seeds, n_seeds=n_seeds)
     logger.info("Seeds: %s", seed_list)
+    logger.info("HMTL enabled: %s", not skip_hmtl)
     logger.info("Baselines: %s", baselines)
+    if skip_hmtl and not baselines:
+        raise ValueError("No models to run: HMTL is skipped and baselines list is empty.")
 
     datasets_meta: list[DatasetMeta]
     if dataset_id is not None:
@@ -1286,6 +1472,7 @@ def run_automlbenchmark_experiments(
                         val_ratio=val_ratio,
                         test_ratio=test_ratio,
                         baselines=baselines,
+                        skip_hmtl=skip_hmtl,
                         split_seed=seed,
                         output_dir=output_dir,
                         study_id=study_id,
@@ -1347,6 +1534,7 @@ def run_automlbenchmark_experiments(
                             val_ratio=val_ratio,
                             test_ratio=test_ratio,
                             baselines=baselines,
+                            skip_hmtl=skip_hmtl,
                             split_seed=seed,
                             output_dir=output_dir,
                             study_id=study_id,
@@ -1457,6 +1645,16 @@ def main() -> None:
             "Supported: catboost single_mlp flat_mtl"
         ),
     )
+    parser.add_argument(
+        "--skip-hmtl",
+        action="store_true",
+        help="Skip HMTL training/evaluation and run only selected baselines.",
+    )
+    parser.add_argument(
+        "--skip-baselines",
+        action="store_true",
+        help="Skip all baseline training/evaluation and run only HMTL.",
+    )
     parser.add_argument("--train-ratio", type=float, default=0.8, help="Train split ratio")
     parser.add_argument("--val-ratio", type=float, default=0.1, help="Validation split ratio")
     parser.add_argument("--test-ratio", type=float, default=0.1, help="Test split ratio")
@@ -1503,6 +1701,8 @@ def main() -> None:
             reverse_dataset_order=args.reverse_dataset_order,
             max_dataset_workers=args.max_dataset_workers,
             baselines=args.baselines,
+            skip_hmtl=args.skip_hmtl,
+            skip_baselines=args.skip_baselines,
             train_ratio=args.train_ratio,
             val_ratio=args.val_ratio,
             test_ratio=args.test_ratio,

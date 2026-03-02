@@ -209,9 +209,12 @@ def split_conformal_classification(
         f"min={np.min(scores):.6f}, max={np.max(scores):.6f}"
     )
 
-    # Compute quantile (adjusted for finite sample)
+    # Compute quantile (adjusted for finite sample).
+    # For small calibration sets and high target coverage, the finite-sample
+    # correction can exceed 1.0, while np.quantile expects q in [0, 1].
     n = len(scores)
     q_level = np.ceil((n + 1) * (1 - alpha)) / n
+    q_level = float(np.clip(q_level, 0.0, 1.0))
     q = np.quantile(scores, q_level, method="higher")
 
     logger.info(f"Conformal quantile (1-alpha={1-alpha:.2f}): {q:.6f}")

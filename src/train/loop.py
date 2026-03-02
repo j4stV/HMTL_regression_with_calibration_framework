@@ -152,6 +152,17 @@ def _autocast_if_needed(enabled: bool, dtype: torch.dtype | None):
     return nullcontext()
 
 
+def _to_numpy_compatible(tensor: torch.Tensor) -> np.ndarray:
+    """Convert tensor to a NumPy-compatible CPU array.
+
+    NumPy does not support torch.bfloat16 tensors directly.
+    """
+    cpu_tensor = tensor.detach().cpu()
+    if cpu_tensor.dtype == torch.bfloat16:
+        cpu_tensor = cpu_tensor.to(dtype=torch.float32)
+    return cpu_tensor.numpy()
+
+
 def _normalize_regression_early_stop_metric(metric_name: str) -> str:
     normalized = str(metric_name).strip().lower()
     aliases = {
@@ -334,12 +345,25 @@ def train_model(
             torch.tensor(y_va.reshape(-1, 1), dtype=torch.float32),
         )
     else:  # classification
-        # For classification, targets are already class indices
-        y_bins_tr = y_tr.astype(np.int64)  # Use class labels directly for aux task
+        # For classification, targets are class indices. If bins-aux is enabled
+        # with fewer bins than classes, fall back to quantile bins to avoid
+        # out-of-range targets in auxiliary cross-entropy.
+        y_bins_tr = y_tr.astype(np.int64)
+        if aux_task == "bins":
+            min_label = int(np.min(y_bins_tr))
+            max_label = int(np.max(y_bins_tr))
+            if min_label < 0 or max_label >= n_bins:
+                logger.warning(
+                    "Classification aux_task=bins received class labels outside [0, %d). "
+                    "Remapping labels to %d quantile bins for auxiliary supervision.",
+                    n_bins,
+                    n_bins,
+                )
+                y_bins_tr = compute_bins(y_tr.astype(np.float64), n_bins, use_rounding=False).astype(np.int64)
         train_ds = TensorDataset(
             torch.tensor(X_tr, dtype=torch.float32),
             torch.tensor(y_tr, dtype=torch.long),  # Class indices
-            torch.tensor(y_bins_tr, dtype=torch.long),  # Same as y_tr for classification
+            torch.tensor(y_bins_tr, dtype=torch.long),  # Aux labels (classes or remapped bins)
         )
         val_ds = TensorDataset(
             torch.tensor(X_va, dtype=torch.float32),
@@ -369,6 +393,7 @@ def train_model(
 
     best = float("inf")
     best_epoch = None
+    best_state_dict: dict[str, torch.Tensor] | None = None
     wait = 0
     
     # Determine aux task type from model
@@ -482,9 +507,9 @@ def train_model(
                         mu, sigma = output
                     else:
                         mu, sigma, _ = output
-                    preds.append(mu.cpu().numpy().ravel())
-                    sigmas.append(sigma.cpu().numpy().ravel())
-                    gts.append(yb.numpy().ravel())
+                    preds.append(_to_numpy_compatible(mu.float()).ravel())
+                    sigmas.append(_to_numpy_compatible(sigma.float()).ravel())
+                    gts.append(_to_numpy_compatible(yb).ravel())
                 y_pred = np.concatenate(preds)
                 y_sigma = np.concatenate(sigmas)
                 y_true = np.concatenate(gts)
@@ -511,8 +536,8 @@ def train_model(
                         logits = output[0]
                     else:
                         logits = output[0]
-                    logits_list.append(logits.cpu().numpy())
-                    gts.append(yb.numpy())
+                    logits_list.append(_to_numpy_compatible(logits.float()))
+                    gts.append(_to_numpy_compatible(yb))
 
                 logits_val = np.concatenate(logits_list)
                 y_true = np.concatenate(gts)
@@ -543,6 +568,10 @@ def train_model(
             improvement = best - score if best != float("inf") else 0.0
             best = score
             best_epoch = epoch
+            best_state_dict = {
+                key: value.detach().cpu().clone()
+                for key, value in model.state_dict().items()
+            }
             wait = 0
             logger.info(f"Epoch {epoch+1}: New best score! {score:.6f} (improvement: {improvement:.6f})")
         else:
@@ -576,5 +605,8 @@ def train_model(
     if history_meta is not None:
         history_meta["best_epoch"] = best_epoch
         history_meta["early_stop_epoch"] = early_stop_epoch
+    if best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
+        logger.info("Restored model weights from best validation epoch: %s", best_epoch)
     logger.info(f"Training completed. Best validation score: {best:.6f}")
     return best
