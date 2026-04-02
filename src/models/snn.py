@@ -17,24 +17,38 @@ class AlphaDropout(nn.AlphaDropout):
 
 
 class SNNEncoder(nn.Module):
-    def __init__(self, input_dim: int, hidden_width: int, depth: int, alpha_dropout: float) -> None:
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_width: int,
+        depth: int,
+        alpha_dropout: float,
+        use_residual: bool = True,
+    ) -> None:
         super().__init__()
-        layers: list[nn.Module] = []
+        blocks: list[nn.Module] = []
         in_dim = input_dim
         for _ in range(depth):
             linear = nn.Linear(in_dim, hidden_width)
             lecun_normal_(linear.weight)
             nn.init.zeros_(linear.bias)
-            layers.append(linear)
-            layers.append(nn.SELU(inplace=True))
+            block_layers: list[nn.Module] = [linear, nn.SELU(inplace=True)]
             if alpha_dropout > 0:
-                layers.append(AlphaDropout(p=alpha_dropout))
+                block_layers.append(AlphaDropout(p=alpha_dropout))
+            blocks.append(nn.Sequential(*block_layers))
             in_dim = hidden_width
-        self.net = nn.Sequential(*layers)
+        self.blocks = nn.ModuleList(blocks)
         self.output_dim = hidden_width
+        self.use_residual = use_residual
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        h = x
+        for block in self.blocks:
+            residual = h
+            h = block(h)
+            if self.use_residual and h.shape == residual.shape:
+                h = h + residual
+        return h
 
 
 class RegressionHead(nn.Module):

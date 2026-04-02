@@ -122,3 +122,24 @@ def test_load_dataset_converts_mixed_feature_types_to_numeric(monkeypatch):
     assert np.isnan(feature_df.loc[0, "road_type"])
     assert np.isfinite(feature_df.loc[1, "road_type"])
     assert np.isfinite(feature_df.loc[1, "nullable_cat"])
+
+
+def test_load_dataset_bundle_preserves_categorical_metadata(monkeypatch):
+    monkeypatch.setattr(
+        openml_loader,
+        "openml",
+        SimpleNamespace(
+            datasets=SimpleNamespace(
+                get_dataset=lambda dataset_id, download_data=True: _FakeMixedTypeDataset()
+            )
+        ),
+    )
+
+    bundle = openml_loader.load_dataset_bundle(12345)
+
+    assert bundle.target_column == "target"
+    assert bundle.categorical_columns == ["road_type", "nullable_cat"]
+    feature_df = bundle.df.drop(columns=[bundle.target_column])
+    assert np.isclose(feature_df.loc[1, "text_num"], 1.5)
+    assert not pd.api.types.is_numeric_dtype(feature_df["road_type"])
+    assert not pd.api.types.is_numeric_dtype(feature_df["nullable_cat"])

@@ -7,11 +7,12 @@ import pandas as pd
 from typing import Any
 
 try:
-    from catboost import CatBoostError, CatBoostRegressor
+    from catboost import CatBoostClassifier, CatBoostError, CatBoostRegressor
     HAS_CATBOOST = True
 except ImportError:
     HAS_CATBOOST = False
     CatBoostRegressor = None  # type: ignore[assignment]
+    CatBoostClassifier = None  # type: ignore[assignment]
     CatBoostError = Exception
 
 from src.utils.logger import get_logger
@@ -303,3 +304,162 @@ class CatBoostBaseline:
         
         return mu_mean, sigma_total, sigma_epistemic_combined, sigma_aleatoric
 
+
+def _entropy(probs: np.ndarray) -> np.ndarray:
+    """Compute Shannon entropy per row: H(p) = -sum(p * log(p))."""
+    probs_safe = np.clip(probs, 1e-12, 1.0)
+    return -np.sum(probs_safe * np.log(probs_safe), axis=-1)
+
+
+class CatBoostClassificationBaseline:
+    """CatBoost classification baseline with entropy-based uncertainty."""
+
+    def __init__(
+        self,
+        n_models: int = 10,
+        iterations: int = 1000,
+        learning_rate: float = 0.1,
+        depth: int = 6,
+        random_seed: int = 42,
+        num_classes: int = 2,
+        compute_device: str = "auto",
+        gpu_devices: str | None = None,
+    ) -> None:
+        if not HAS_CATBOOST:
+            raise ImportError("CatBoost is not installed. Install with: pip install catboost")
+        if compute_device not in {"auto", "cpu", "gpu"}:
+            raise ValueError("compute_device must be one of: 'auto', 'cpu', 'gpu'")
+
+        self.n_models = n_models
+        self.iterations = iterations
+        self.learning_rate = learning_rate
+        self.depth = depth
+        self.random_seed = random_seed
+        self.num_classes = num_classes
+        self.compute_device = compute_device
+        self.gpu_devices = gpu_devices
+        self.models: list[Any] = []
+        self.logger = get_logger("baselines.catboost_cls")
+        self._resolved_task_type: str | None = None
+
+    def _candidate_task_types(self) -> list[str]:
+        if self.compute_device == "gpu":
+            return ["GPU"]
+        if self.compute_device == "cpu":
+            return ["CPU"]
+        return ["GPU", "CPU"]
+
+    def _build_model(self, task_type: str, random_seed: int):
+        loss = "Logloss" if self.num_classes == 2 else "MultiClass"
+        params: dict[str, Any] = {
+            "iterations": self.iterations,
+            "learning_rate": self.learning_rate,
+            "depth": self.depth,
+            "random_seed": random_seed,
+            "verbose": False,
+            "loss_function": loss,
+            "task_type": task_type,
+        }
+        if task_type == "GPU" and self.gpu_devices:
+            params["devices"] = self.gpu_devices
+        return CatBoostClassifier(**params)
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        X_val: np.ndarray | None = None,
+        y_val: np.ndarray | None = None,
+    ) -> None:
+        self.logger.info("Training CatBoost classification ensemble with %d models", self.n_models)
+        self.models = []
+        self._resolved_task_type = None
+        col_names = [f"feature_{j}" for j in range(X.shape[1])]
+
+        for i in range(self.n_models):
+            X_df = pd.DataFrame(X, columns=col_names)
+            eval_set = None
+            if X_val is not None and y_val is not None:
+                X_val_df = pd.DataFrame(X_val, columns=col_names)
+                eval_set = (X_val_df, y_val)
+
+            task_candidates = (
+                [self._resolved_task_type]
+                if self._resolved_task_type is not None
+                else self._candidate_task_types()
+            )
+            last_error: Exception | None = None
+
+            for task_type in task_candidates:
+                model = self._build_model(task_type=task_type, random_seed=self.random_seed + i)
+                try:
+                    model.fit(
+                        X_df,
+                        y,
+                        eval_set=eval_set,
+                        use_best_model=eval_set is not None,
+                        verbose=False,
+                        early_stopping_rounds=50 if eval_set is not None else None,
+                    )
+                    if self._resolved_task_type is None:
+                        self._resolved_task_type = task_type
+                        self.logger.info("CatBoost cls execution device resolved to %s", task_type)
+                    self.models.append(model)
+                    break
+                except CatBoostError as exc:
+                    last_error = exc
+                    if self.compute_device == "auto" and task_type == "GPU":
+                        self.logger.warning("CatBoost cls GPU failed, falling back to CPU: %s", exc)
+                        continue
+                    raise
+            else:
+                if last_error is not None:
+                    raise last_error
+                raise RuntimeError("Failed to initialise CatBoost classification model")
+
+            if (i + 1) % 5 == 0:
+                self.logger.info("Trained %d/%d classification models", i + 1, self.n_models)
+
+        self.logger.info("CatBoost classification ensemble training completed")
+
+    def predict(
+        self,
+        X: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Predict class probabilities with entropy-based uncertainty.
+
+        Returns:
+            probs_mean: (n_samples, n_classes) averaged probabilities
+            unc_total:  (n_samples,) H[E[p]]  (entropy of mean probs)
+            unc_epi:    (n_samples,) MI = H[E[p]] - E[H[p]]
+            unc_alea:   (n_samples,) E[H[p]]  (mean per-model entropy)
+        """
+        if not self.models:
+            raise ValueError("Models not trained. Call fit() first.")
+
+        X_df = pd.DataFrame(X, columns=[f"feature_{j}" for j in range(X.shape[1])])
+
+        all_probs: list[np.ndarray] = []
+        for model in self.models:
+            probs = np.asarray(model.predict_proba(X_df), dtype=float)
+            if probs.ndim == 1:
+                probs = np.column_stack([1.0 - probs, probs])
+            all_probs.append(probs)
+
+        probs_stack = np.stack(all_probs, axis=0)  # (n_models, n_samples, n_classes)
+        probs_mean = np.mean(probs_stack, axis=0)  # (n_samples, n_classes)
+
+        # Entropy-based uncertainty decomposition (same as ensemble_predict_classification)
+        unc_total = _entropy(probs_mean)  # H[E[p]]
+        per_model_entropy = np.stack([_entropy(p) for p in all_probs], axis=0)
+        unc_alea = np.mean(per_model_entropy, axis=0)  # E[H[p]]
+        unc_epi = np.maximum(unc_total - unc_alea, 0.0)  # MI
+
+        self.logger.info(
+            "CatBoost cls uncertainty — total: %.4f, epi: %.4f, alea: %.4f",
+            float(np.mean(unc_total)),
+            float(np.mean(unc_epi)),
+            float(np.mean(unc_alea)),
+        )
+
+        return probs_mean, unc_total, unc_epi, unc_alea

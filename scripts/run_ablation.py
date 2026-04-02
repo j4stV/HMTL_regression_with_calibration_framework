@@ -72,6 +72,7 @@ def run_ablation_study(
                 aux_weight=float(merged_config.get("aux_weight", 0.3)),
                 enable_aux=bool(merged_config.get("enable_aux", True)),
                 aux_task=str(merged_config.get("aux_task", "bins")),
+                use_residual=bool(merged_config.get("use_residual", True)),
             )
         
         # Train single model (quick ablation)
@@ -84,6 +85,13 @@ def run_ablation_study(
             aux_weight=float(merged_config.get("aux_weight", 0.3)),
             optimizer=str(merged_config.get("optimizer", "radam_lookahead")),
             weight_decay=float(merged_config.get("weight_decay", 0.0)),
+            grad_clip_norm=(
+                None
+                if merged_config.get("grad_clip_norm", 1.0) is None
+                else float(merged_config.get("grad_clip_norm", 1.0))
+            ),
+            lr_scheduler_name=str(merged_config.get("lr_scheduler_name", "none")),
+            lr_scheduler_eta_min_ratio=float(merged_config.get("lr_scheduler_eta_min_ratio", 0.05)),
         )
         
         score = train_model(model, X_tr, y_tr, X_va, y_va, n_bins=5, cfg=train_conf)
@@ -144,6 +152,9 @@ def main() -> None:
         pca_enabled=bool(data_cfg["preprocess"]["pca"]["enabled"]),
         pca_n_components=data_cfg["preprocess"]["pca"]["n_components"],
         target_standardize=bool(data_cfg["preprocess"]["target_standardize"]),
+        target_encoding_enabled=bool(data_cfg["preprocess"].get("target_encoding_enabled", False)),
+        target_encoding_n_splits=int(data_cfg["preprocess"].get("target_encoding_n_splits", 5)),
+        target_encoding_smoothing=float(data_cfg["preprocess"].get("target_encoding_smoothing", 20.0)),
     )
     
     pre = TabularPreprocessor(pre_cfg, target_column=target_col).fit(df_train)
@@ -158,6 +169,7 @@ def main() -> None:
         "depth_low": int(model_cfg["hmtl"]["low_layer"]),
         "depth_high": int(model_cfg["hmtl"]["high_layer"]),
         "alpha_dropout": float(model_cfg["encoder"]["alpha_dropout"]),
+        "use_residual": bool(model_cfg["encoder"].get("residual", True)),
         "n_bins": int(model_cfg["hmtl"]["n_bins"]),
         "aux_weight": float(model_cfg["hmtl"]["lambda_aux"]),
         "lr": float(train_cfg["optimizer"]["lr"]),
@@ -166,6 +178,9 @@ def main() -> None:
         "patience": int(train_cfg["training"]["early_stop"]["patience"]) if train_cfg["training"].get("early_stop") else 20,
         "optimizer": str(train_cfg["optimizer"].get("name", "radam_lookahead")),
         "weight_decay": float(train_cfg["optimizer"].get("weight_decay", 0.0)),
+        "grad_clip_norm": train_cfg["optimizer"].get("grad_clip_norm", 1.0),
+        "lr_scheduler_name": str(train_cfg["optimizer"].get("scheduler", {}).get("name", "none")),
+        "lr_scheduler_eta_min_ratio": float(train_cfg["optimizer"].get("scheduler", {}).get("eta_min_ratio", 0.05)),
     }
     
     # Define ablation configurations

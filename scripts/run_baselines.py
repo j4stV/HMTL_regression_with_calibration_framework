@@ -119,6 +119,9 @@ def main() -> None:
         pca_enabled=bool(data_cfg["preprocess"]["pca"]["enabled"]),
         pca_n_components=data_cfg["preprocess"]["pca"]["n_components"],
         target_standardize=bool(data_cfg["preprocess"]["target_standardize"]),
+        target_encoding_enabled=bool(data_cfg["preprocess"].get("target_encoding_enabled", False)),
+        target_encoding_n_splits=int(data_cfg["preprocess"].get("target_encoding_n_splits", 5)),
+        target_encoding_smoothing=float(data_cfg["preprocess"].get("target_encoding_smoothing", 20.0)),
     )
     
     pre = TabularPreprocessor(pre_cfg, target_column=target_col).fit(df_train)
@@ -128,19 +131,25 @@ def main() -> None:
     input_dim = X_tr.shape[1]
     task_cfg = dict(data_cfg.get("task", {}))
     task_type = str(task_cfg.get("type", task_cfg.get("task_type", "regression"))).lower()
+    optimizer_cfg = train_cfg["optimizer"]
+    scheduler_cfg = optimizer_cfg.get("scheduler", {})
+    grad_clip_raw = optimizer_cfg.get("grad_clip_norm", 1.0)
     
     # Training config
     train_conf = TrainConfig(
-        lr=float(train_cfg["optimizer"]["lr"]),
+        lr=float(optimizer_cfg["lr"]),
         epochs=int(train_cfg["training"]["epochs"]),
         batch_size=int(train_cfg["training"]["batch_size"]),
         patience=int(train_cfg["training"]["early_stop"]["patience"]) if train_cfg["training"].get("early_stop") else 10,
-        optimizer=str(train_cfg["optimizer"].get("name", "radam_lookahead")),
-        lookahead_k=int(train_cfg["optimizer"].get("lookahead_sync_period", 6)),
-        lookahead_alpha=float(train_cfg["optimizer"].get("lookahead_slow_step", 0.5)),
-        weight_decay=float(train_cfg["optimizer"].get("weight_decay", 0.0)),
+        optimizer=str(optimizer_cfg.get("name", "radam_lookahead")),
+        lookahead_k=int(optimizer_cfg.get("lookahead_sync_period", 6)),
+        lookahead_alpha=float(optimizer_cfg.get("lookahead_slow_step", 0.5)),
+        weight_decay=float(optimizer_cfg.get("weight_decay", 0.0)),
         sigma_reg_weight=float(train_cfg["training"].get("sigma_reg_weight", 0.01)),
         seed=int(train_cfg["training"].get("seed")) if train_cfg["training"].get("seed") else None,
+        grad_clip_norm=None if grad_clip_raw is None else float(grad_clip_raw),
+        lr_scheduler_name=str(scheduler_cfg.get("name", "none")),
+        lr_scheduler_eta_min_ratio=float(scheduler_cfg.get("eta_min_ratio", 0.05)),
     )
     
     results = {}
@@ -547,6 +556,7 @@ def main() -> None:
                     depth_low = int(model_cfg["hmtl"]["low_layer"])
                     depth_high = int(model_cfg["hmtl"]["high_layer"])
                     alpha_dropout = float(model_cfg["encoder"]["alpha_dropout"])
+                    use_residual = bool(model_cfg["encoder"].get("residual", True))
                     n_bins = int(model_cfg["hmtl"]["n_bins"])
                     aux_weight = float(model_cfg["hmtl"]["lambda_aux"])
                     sigma_max = float(model_cfg.get("regression_head", {}).get("sigma_max", 5.0))
@@ -556,6 +566,7 @@ def main() -> None:
                     depth_low = 12
                     depth_high = 18
                     alpha_dropout = 0.0003
+                    use_residual = True
                     n_bins = 5
                     aux_weight = 0.3
                     sigma_max = 5.0
@@ -578,6 +589,7 @@ def main() -> None:
                     depth_low=depth_low,
                     depth_high=depth_high,
                     alpha_dropout=alpha_dropout,
+                    use_residual=use_residual,
                     n_bins=n_bins,
                     aux_weight=aux_weight,
                     n_models=n_models,

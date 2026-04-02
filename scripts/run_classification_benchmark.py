@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run size-dependence experiments on OpenML regression datasets.
+"""Run size-dependence experiments on OpenML classification datasets.
 
 This script compares HMTL against configurable baselines on multiple dataset sizes
 and multiple seeds while avoiding preprocessing leakage.
@@ -44,27 +44,27 @@ if HIGH_LEVEL_PROGRESS_ONLY:
     setup_logging(log_level=logging.ERROR)
     logging.getLogger().setLevel(logging.ERROR)
 
-from src.baselines.trainer import (
-    train_catboost_baseline,
-    train_flat_mtl_baseline,
-    train_single_mlp_baseline,
-)
+from src.baselines.trainer import train_catboost_classification_baseline
 from src.data.openml_loader import (
-    get_regression_datasets,
+    get_classification_datasets,
     load_dataset_bundle,
     prepare_dataset_splits,
     sample_train_data,
 )
 from src.data.preprocess import PreprocessConfig, TabularPreprocessor
-from src.eval.ensemble import ensemble_predict
-from src.eval.evaluator import evaluate_on_dataset
-from src.eval.metrics import EvaluationMetrics, evaluate_comprehensive
+from src.eval.classification_metrics import compute_classification_metrics
+from src.eval.ensemble import ensemble_predict_classification
+from src.eval.evaluator import evaluate_classification_on_dataset
 from src.models.hmtl import HMTLModel
+from src.tasks.classification import (
+    ClassificationTask,
+    ClassificationTaskConfig,
+)
 from src.train.ensemble import EnsembleConfig, fit_ensemble
 from src.train.loop import TrainConfig
 
 
-SUPPORTED_BASELINES = ("catboost", "single_mlp", "flat_mtl")
+SUPPORTED_BASELINES = ("catboost",)
 
 
 @dataclass
@@ -90,7 +90,6 @@ def _resolve_dataset_name(dataset_id: int, fallback_name: str | None) -> str:
     if fallback_name and fallback_name.strip() and fallback_name != f"dataset_{dataset_id}":
         return fallback_name
 
-    # Try to get a meaningful name from OpenML metadata.
     try:
         import openml  # type: ignore
 
@@ -113,6 +112,10 @@ def _resolve_seed_list(base_seed: int, seeds: list[int] | None, n_seeds: int) ->
     return [base_seed + i for i in range(n_seeds)]
 
 
+def _detect_num_classes(y: np.ndarray) -> int:
+    return len(np.unique(y))
+
+
 def _build_preprocess_config(data_cfg: dict[str, Any] | None) -> PreprocessConfig:
     preprocess_cfg = (data_cfg or {}).get("preprocess", {})
     return PreprocessConfig(
@@ -127,37 +130,41 @@ def _build_preprocess_config(data_cfg: dict[str, Any] | None) -> PreprocessConfi
         standardize=bool(preprocess_cfg.get("standardize", True)),
         pca_enabled=bool(preprocess_cfg.get("pca", {}).get("enabled", True)),
         pca_n_components=preprocess_cfg.get("pca", {}).get("n_components", None),
-        target_standardize=bool(preprocess_cfg.get("target_standardize", True)),
+        target_standardize=False,  # Never standardize target for classification
         target_encoding_enabled=bool(preprocess_cfg.get("target_encoding_enabled", True)),
         target_encoding_n_splits=int(preprocess_cfg.get("target_encoding_n_splits", 5)),
         target_encoding_smoothing=float(preprocess_cfg.get("target_encoding_smoothing", 20.0)),
     )
 
 
-def _normalize_early_stop_metric_name(metric_name: str) -> str:
+def _normalize_classification_early_stop_metric(metric_name: str) -> str:
     normalized = str(metric_name).strip().lower()
     aliases = {
-        "hybrid": "hybrid_rmse_rauc",
-        "hybrid_rmse_rauc": "hybrid_rmse_rauc",
-        "hybrid_rmse_r_auc": "hybrid_rmse_rauc",
-        "rmse_plus_r_auc": "hybrid_rmse_rauc",
-        "rmse_plus_rauc": "hybrid_rmse_rauc",
-        "rmse": "rmse",
-        "r_auc_mse": "r_auc_mse",
+        "balanced_accuracy": "balanced_accuracy",
+        "bal_acc": "balanced_accuracy",
+        "balanced_acc": "balanced_accuracy",
+        "accuracy": "accuracy",
+        "acc": "accuracy",
+        "f1_weighted": "f1_weighted",
+        "f1": "f1_weighted",
     }
     if normalized not in aliases:
         raise ValueError(
-            "Unsupported regression early-stop metric "
-            f"'{metric_name}'. Expected one of: hybrid_rmse_rauc, rmse, r_auc_mse."
+            "Unsupported classification early-stop metric "
+            f"'{metric_name}'. Expected one of: balanced_accuracy, accuracy, f1_weighted."
         )
     return aliases[normalized]
 
 
-def _resolve_regression_early_stop_settings(train_cfg_yaml: dict[str, Any]) -> tuple[str, float]:
+def _resolve_classification_early_stop_settings(
+    train_cfg_yaml: dict[str, Any],
+) -> str:
     early_stop_cfg = train_cfg_yaml.get("training", {}).get("early_stop", {})
-    metric = _normalize_early_stop_metric_name(early_stop_cfg.get("metric", "hybrid_rmse_rauc"))
-    hybrid_weight = float(early_stop_cfg.get("hybrid_r_auc_weight", 0.25))
-    return metric, hybrid_weight
+    metric = early_stop_cfg.get("metric", "balanced_accuracy")
+    # Map regression metrics to a sensible classification default
+    if metric in ("hybrid_rmse_rauc", "rmse", "r_auc_mse", "hybrid"):
+        metric = "balanced_accuracy"
+    return _normalize_classification_early_stop_metric(metric)
 
 
 def _estimate_n_train_samples(n_train_full: int, size_ratio: float) -> int:
@@ -183,7 +190,7 @@ def _preprocess_config_to_dict(cfg: PreprocessConfig) -> dict[str, Any]:
         "standardize": bool(cfg.standardize),
         "pca_enabled": bool(cfg.pca_enabled),
         "pca_n_components": cfg.pca_n_components,
-        "target_standardize": bool(cfg.target_standardize),
+        "target_standardize": False,
         "target_encoding_enabled": bool(cfg.target_encoding_enabled),
         "target_encoding_n_splits": int(cfg.target_encoding_n_splits),
         "target_encoding_smoothing": float(cfg.target_encoding_smoothing),
@@ -199,25 +206,20 @@ def _build_effective_size_configs(
     size_ratio: float,
     n_train_size: int,
     n_features: int,
+    num_classes: int = 2,
 ) -> dict[str, Any]:
     model_cfg = copy.deepcopy(base_model_cfg)
     train_cfg_yaml = copy.deepcopy(base_train_cfg_yaml)
     ensemble_cfg_yaml = copy.deepcopy(base_ensemble_cfg_yaml)
     preprocess_config = copy.deepcopy(base_preprocess_config)
+    preprocess_config.target_standardize = False  # Always off for classification
 
     regime = _determine_size_regime(int(n_train_size))
 
     training_cfg = train_cfg_yaml.setdefault("training", {})
     early_stop_cfg = training_cfg.setdefault("early_stop", {})
-    configured_metric = _normalize_early_stop_metric_name(
-        early_stop_cfg.get("metric", "hybrid_rmse_rauc")
-    )
-    # Keep backward compatibility with old config defaults while switching the
-    # AutoML benchmark path to the hybrid objective.
-    if configured_metric == "r_auc_mse":
-        configured_metric = "hybrid_rmse_rauc"
+    configured_metric = _resolve_classification_early_stop_settings(train_cfg_yaml)
     early_stop_cfg["metric"] = configured_metric
-    early_stop_cfg["hybrid_r_auc_weight"] = float(early_stop_cfg.get("hybrid_r_auc_weight", 0.25))
 
     optimizer_cfg = train_cfg_yaml.setdefault("optimizer", {})
     base_weight_decay = float(
@@ -248,7 +250,7 @@ def _build_effective_size_configs(
         hmtl_cfg["high_layer"] = int(capped_high)
         hmtl_cfg["low_layer"] = int(capped_low)
         hmtl_cfg["enabled"] = True
-        hmtl_cfg["aux_task"] = "bins"
+        hmtl_cfg["aux_task"] = "contrastive"
         hmtl_cfg["lambda_aux"] = float(min(base_lambda_aux, 0.2))
         optimizer_cfg["weight_decay"] = float(max(base_weight_decay, 1e-4))
     elif regime == "small":
@@ -258,34 +260,36 @@ def _build_effective_size_configs(
         hmtl_cfg["high_layer"] = int(capped_high)
         hmtl_cfg["low_layer"] = int(capped_low)
         hmtl_cfg["enabled"] = True
-        hmtl_cfg["aux_task"] = "bins"
+        hmtl_cfg["aux_task"] = "contrastive"
         hmtl_cfg["lambda_aux"] = float(min(base_lambda_aux, 0.35))
         optimizer_cfg["weight_decay"] = float(max(base_weight_decay, 5e-5))
     else:
         hmtl_cfg["enabled"] = True
+        # Scale width by number of classes for multiclass tasks
+        cls_width_mult = max(1, num_classes // 2)
         if n_features <= 10:
-            encoder_cfg["hidden_width"] = int(min(base_hidden_width, 64))
-            hmtl_cfg["high_layer"] = 8
+            encoder_cfg["hidden_width"] = int(min(base_hidden_width, max(96, 64 * cls_width_mult)))
+            hmtl_cfg["high_layer"] = 8 + (2 if num_classes >= 4 else 0)
             hmtl_cfg["low_layer"] = 3
-            hmtl_cfg["aux_task"] = "bins"
+            hmtl_cfg["aux_task"] = "contrastive"
             hmtl_cfg["lambda_aux"] = float(min(base_lambda_aux, 0.25))
         elif n_features <= 20:
-            encoder_cfg["hidden_width"] = int(min(base_hidden_width, 96))
-            hmtl_cfg["high_layer"] = 10
+            encoder_cfg["hidden_width"] = int(min(base_hidden_width, max(128, 96 * cls_width_mult)))
+            hmtl_cfg["high_layer"] = 10 + (2 if num_classes >= 4 else 0)
             hmtl_cfg["low_layer"] = 4
-            hmtl_cfg["aux_task"] = "bins"
+            hmtl_cfg["aux_task"] = "contrastive"
             hmtl_cfg["lambda_aux"] = float(min(base_lambda_aux, 0.30))
         elif n_features <= 64:
             encoder_cfg["hidden_width"] = int(min(base_hidden_width, 128))
             hmtl_cfg["high_layer"] = 14
             hmtl_cfg["low_layer"] = 6
-            hmtl_cfg["aux_task"] = "bins"
+            hmtl_cfg["aux_task"] = "contrastive"
             hmtl_cfg["lambda_aux"] = float(min(base_lambda_aux, 0.35))
         elif n_features <= 256:
             encoder_cfg["hidden_width"] = int(base_hidden_width)
             hmtl_cfg["high_layer"] = 16
             hmtl_cfg["low_layer"] = 10
-            hmtl_cfg["aux_task"] = "bins"
+            hmtl_cfg["aux_task"] = "contrastive"
             hmtl_cfg["lambda_aux"] = float(min(base_lambda_aux, 0.35))
         else:
             encoder_cfg["hidden_width"] = int(base_hidden_width)
@@ -352,7 +356,6 @@ def _build_effective_size_configs(
             "batch_size": int(training_cfg["batch_size"]),
             "early_stop": {
                 "metric": str(early_stop_cfg["metric"]),
-                "hybrid_r_auc_weight": float(early_stop_cfg["hybrid_r_auc_weight"]),
                 "patience": int(early_stop_cfg.get("patience", 10)),
             },
         },
@@ -418,7 +421,7 @@ def prepare_preprocessed_splits_for_size(
         preprocess_config,
         target_column=target_column,
         categorical_columns=categorical_columns,
-        task_type="regression",
+        task_type="classification",
     ).fit(df_train_sampled)
 
     X_tr, y_tr = preprocessor.transform(df_train_sampled)
@@ -438,26 +441,28 @@ def prepare_preprocessed_splits_for_size(
 
 
 def _build_catboost_preprocess_config(base_config: PreprocessConfig) -> PreprocessConfig:
-    """Use only minimal preprocessing for CatBoost while preserving target scaling."""
+    """Use only minimal preprocessing for CatBoost."""
     cfg = copy.deepcopy(base_config)
     cfg.use_dynamic_binning = False
     cfg.quantile_binning_enabled = False
     cfg.standardize = False
     cfg.pca_enabled = False
     cfg.target_encoding_enabled = False
+    cfg.target_standardize = False
     return cfg
 
 
-def _metrics_to_dict(metrics: EvaluationMetrics) -> dict[str, float]:
-    return {
-        "rmse": float(metrics.rmse),
-        "mse": float(metrics.mse),
-        "mae": float(metrics.mae),
-        "r_auc_mse": float(metrics.r_auc_mse),
-        "mean_uncertainty": float(metrics.mean_uncertainty),
-        "mean_epistemic": float(metrics.mean_epistemic),
-        "mean_aleatoric": float(metrics.mean_aleatoric),
-    }
+def _classification_metrics_to_dict(metrics: dict[str, float]) -> dict[str, float]:
+    """Extract classification metrics into a clean dict with float values."""
+    keys = [
+        "accuracy", "balanced_accuracy", "f1_macro", "f1_weighted",
+        "auroc", "ece", "brier", "mean_uncertainty", "mean_epistemic", "mean_aleatoric",
+    ]
+    result: dict[str, float] = {}
+    for k in keys:
+        if k in metrics and metrics[k] is not None and np.isfinite(float(metrics[k])):
+            result[k] = float(metrics[k])
+    return result
 
 
 def _aggregate_metric_dicts(metric_dicts: list[dict[str, float]]) -> dict[str, dict[str, float]]:
@@ -490,11 +495,23 @@ def _extract_mean_metrics(aggregated: dict[str, dict[str, float]]) -> dict[str, 
     return {metric: stats["mean"] for metric, stats in aggregated.items() if "mean" in stats}
 
 
-def _compute_delta_vs_hmtl(baseline_metrics: dict[str, float], hmtl_metrics: dict[str, float]) -> dict[str, float]:
-    return {
-        "delta_rmse": float(baseline_metrics["rmse"] - hmtl_metrics["rmse"]),
-        "delta_r_auc_mse": float(baseline_metrics["r_auc_mse"] - hmtl_metrics["r_auc_mse"]),
-    }
+def _compute_delta_vs_hmtl(
+    baseline_metrics: dict[str, float],
+    hmtl_metrics: dict[str, float],
+) -> dict[str, float]:
+    delta: dict[str, float] = {}
+
+    # Positive delta = HMTL wins for accuracy-like metrics (higher is better)
+    for key in ("accuracy", "balanced_accuracy", "f1_macro", "f1_weighted", "auroc"):
+        if key in hmtl_metrics and key in baseline_metrics:
+            delta[f"delta_{key}"] = float(hmtl_metrics[key] - baseline_metrics[key])
+
+    # Positive delta = HMTL wins for error-like metrics (lower is better)
+    for key in ("ece", "brier"):
+        if key in hmtl_metrics and key in baseline_metrics:
+            delta[f"delta_{key}"] = float(baseline_metrics[key] - hmtl_metrics[key])
+
+    return delta
 
 
 def _is_bfloat16_error(exc: Exception) -> bool:
@@ -503,10 +520,7 @@ def _is_bfloat16_error(exc: Exception) -> bool:
 
 
 def _resolve_amp_config(train_cfg_yaml: dict[str, Any]) -> dict[str, Any]:
-    """Resolve AMP config with support for both legacy and nested layouts.
-
-    Preferred layout is `training.amp`. Legacy top-level `amp` is still supported.
-    """
+    """Resolve AMP config with support for both legacy and nested layouts."""
     training_amp = train_cfg_yaml.get("training", {}).get("amp", {})
     root_amp = train_cfg_yaml.get("amp", {})
     amp_cfg = training_amp if isinstance(training_amp, dict) and training_amp else root_amp
@@ -525,7 +539,6 @@ def _resolve_amp_config(train_cfg_yaml: dict[str, Any]) -> dict[str, Any]:
 
 def _clone_train_cfg_with_fp16_amp(train_cfg_yaml: dict[str, Any]) -> dict[str, Any]:
     cloned = copy.deepcopy(train_cfg_yaml)
-    # Write both locations so old/new readers both see fp16.
     top_level_amp = cloned.setdefault("amp", {})
     if isinstance(top_level_amp, dict):
         top_level_amp["enabled"] = True
@@ -554,16 +567,22 @@ def _clone_train_cfg_with_amp_disabled(train_cfg_yaml: dict[str, Any]) -> dict[s
     return cloned
 
 
-def _build_hmtl_model_builder(
+def _build_hmtl_classification_model_builder(
     *,
     input_dim: int,
     model_cfg: dict[str, Any],
-    scale_coeff: float,
+    num_classes: int,
 ):
     hidden_width = int(model_cfg["encoder"]["hidden_width"])
     use_residual = bool(model_cfg["encoder"].get("residual", True))
 
     def build_model() -> HMTLModel:
+        task_config = ClassificationTaskConfig(
+            num_classes=num_classes,
+            temperature_scaling=True,
+        )
+        task_head_module = ClassificationTask.create_task_head(task_config, in_dim=hidden_width)
+
         return HMTLModel(
             input_dim=input_dim,
             hidden_width=hidden_width,
@@ -575,14 +594,15 @@ def _build_hmtl_model_builder(
             enable_aux=bool(model_cfg["hmtl"].get("enabled", True)),
             aux_task=str(model_cfg["hmtl"].get("aux_task", "contrastive")),
             proj_dim=int(model_cfg["hmtl"].get("proj_dim", 50)),
-            scale_coeff=scale_coeff,
+            scale_coeff=1.0,  # No target scaling for classification
+            task_head=task_head_module.head,
             use_residual=use_residual,
         )
 
     return build_model
 
 
-def train_and_evaluate_hmtl(
+def train_and_evaluate_hmtl_classification(
     *,
     X_tr: np.ndarray,
     y_tr: np.ndarray,
@@ -590,15 +610,15 @@ def train_and_evaluate_hmtl(
     y_va: np.ndarray,
     X_te: np.ndarray,
     y_te: np.ndarray,
-    preprocessor: TabularPreprocessor,
+    num_classes: int,
     model_cfg: dict[str, Any],
     train_cfg_yaml: dict[str, Any],
     ensemble_cfg_yaml: dict[str, Any],
     seed: int,
     show_inner_progress: bool = True,
 ) -> dict[str, float]:
-    logger = get_logger("automlbenchmark")
-    early_stop_metric, hybrid_weight = _resolve_regression_early_stop_settings(train_cfg_yaml)
+    logger = get_logger("classification_benchmark")
+    early_stop_metric = _resolve_classification_early_stop_settings(train_cfg_yaml)
     amp_cfg = _resolve_amp_config(train_cfg_yaml)
     optimizer_cfg = train_cfg_yaml["optimizer"]
     scheduler_cfg = optimizer_cfg.get("scheduler", {})
@@ -617,15 +637,14 @@ def train_and_evaluate_hmtl(
         lookahead_k=int(optimizer_cfg.get("lookahead_sync_period", 6)),
         lookahead_alpha=float(optimizer_cfg.get("lookahead_slow_step", 0.5)),
         weight_decay=float(optimizer_cfg.get("weight_decay", 0.0)),
-        sigma_reg_weight=float(train_cfg_yaml["training"].get("sigma_reg_weight", 0.0)),
+        sigma_reg_weight=0.0,  # Not applicable for classification
         seed=seed,
-        task_type="regression",
+        task_type="classification",
         show_progress=show_inner_progress,
         amp_enabled=amp_enabled,
         amp_dtype=amp_dtype,
         amp_eval_enabled=amp_eval_enabled,
         early_stop_metric=early_stop_metric,
-        hybrid_r_auc_weight=hybrid_weight,
         grad_clip_norm=None if grad_clip_raw is None else float(grad_clip_raw),
         lr_scheduler_name=str(scheduler_cfg.get("name", "none")),
         lr_scheduler_eta_min_ratio=float(scheduler_cfg.get("eta_min_ratio", 0.05)),
@@ -638,16 +657,30 @@ def train_and_evaluate_hmtl(
     )
 
     input_dim = X_tr.shape[1]
-    scale_coeff = (
-        float(preprocessor.target_std_)
-        if preprocessor.target_std_ is not None and preprocessor.target_std_ > 1e-12
-        else 1.0
-    )
 
-    build_model = _build_hmtl_model_builder(
+    # Compute class weights for imbalanced datasets
+    from sklearn.utils.class_weight import compute_class_weight
+    class_labels = np.unique(y_tr.astype(int))
+    class_weights = compute_class_weight("balanced", classes=class_labels, y=y_tr.astype(int))
+    class_counts = np.bincount(y_tr.astype(int), minlength=num_classes)
+    imbalance_ratio = float(class_counts.max()) / max(float(class_counts[class_counts > 0].min()), 1.0)
+    use_focal = imbalance_ratio > 3.0
+
+    task_config = ClassificationTaskConfig(
+        num_classes=num_classes,
+        temperature_scaling=True,
+        class_weights=class_weights.tolist(),
+        use_focal_loss=use_focal,
+        focal_gamma=2.0,
+        label_smoothing=0.05,
+    )
+    task_loss = ClassificationTask.create_loss(task_config)
+    task_metrics = ClassificationTask.create_metrics(task_config)
+
+    build_model = _build_hmtl_classification_model_builder(
         input_dim=input_dim,
         model_cfg=model_cfg,
-        scale_coeff=scale_coeff,
+        num_classes=num_classes,
     )
 
     models, avg_score = fit_ensemble(
@@ -659,34 +692,45 @@ def train_and_evaluate_hmtl(
         n_bins=int(model_cfg["hmtl"]["n_bins"]),
         ens_cfg=ens_cfg,
         train_cfg=train_cfg,
+        task_loss=task_loss,
+        task_metrics=task_metrics,
     )
 
-    eval_results = evaluate_on_dataset(
+    eval_results = evaluate_classification_on_dataset(
         models=models,
         X=X_te,
         y_true=y_te,
         X_cal=X_va,
         y_cal=y_va,
         coverage_levels=[0.80, 0.90, 0.95],
-        preprocessor=preprocessor,
-        use_normalized_metrics=True,
     )
 
-    metrics = _metrics_to_dict(eval_results.metrics)
+    metrics = _classification_metrics_to_dict(eval_results["metrics"])
+
+    # Add uncertainty stats if available
+    unc = eval_results.get("uncertainty", {})
+    if "total" in unc:
+        metrics["mean_uncertainty"] = float(np.mean(unc["total"]))
+    if "epistemic" in unc:
+        metrics["mean_epistemic"] = float(np.mean(unc["epistemic"]))
+    if "aleatoric" in unc:
+        metrics["mean_aleatoric"] = float(np.mean(unc["aleatoric"]))
+
     metrics["ensemble_avg_val_score"] = float(avg_score)
-    metrics["ensemble_avg_val_r_auc_mse"] = float(avg_score)
 
     logger.info(
-        "HMTL metrics: rmse=%.6f r_auc_mse=%.6f (val_metric=%s avg_val_score=%.6f)",
-        metrics["rmse"],
-        metrics["r_auc_mse"],
+        "HMTL classification metrics: accuracy=%.4f balanced_accuracy=%.4f ece=%.4f "
+        "(val_metric=%s avg_val_score=%.6f)",
+        metrics.get("accuracy", float("nan")),
+        metrics.get("balanced_accuracy", float("nan")),
+        metrics.get("ece", float("nan")),
         early_stop_metric,
         metrics["ensemble_avg_val_score"],
     )
     return metrics
 
 
-def train_and_evaluate_baseline(
+def train_and_evaluate_baseline_classification(
     *,
     baseline_name: str,
     X_tr: np.ndarray,
@@ -695,107 +739,55 @@ def train_and_evaluate_baseline(
     y_va: np.ndarray,
     X_te: np.ndarray,
     y_te: np.ndarray,
+    num_classes: int,
     model_cfg: dict[str, Any],
     train_cfg_yaml: dict[str, Any],
     ensemble_cfg_yaml: dict[str, Any],
     seed: int,
     show_inner_progress: bool = True,
 ) -> dict[str, float]:
-    early_stop_metric, hybrid_weight = _resolve_regression_early_stop_settings(train_cfg_yaml)
-    amp_cfg = _resolve_amp_config(train_cfg_yaml)
-    optimizer_cfg = train_cfg_yaml["optimizer"]
-    scheduler_cfg = optimizer_cfg.get("scheduler", {})
-    grad_clip_raw = optimizer_cfg.get("grad_clip_norm", 1.0)
-    amp_enabled = bool(amp_cfg["enabled"])
-    amp_dtype = str(amp_cfg["dtype"])
-    amp_eval_enabled = bool(amp_cfg["eval_enabled"])
+    logger = get_logger("classification_benchmark")
 
-    train_cfg = TrainConfig(
-        lr=float(optimizer_cfg["lr"]),
-        epochs=int(train_cfg_yaml["training"]["epochs"]),
-        batch_size=int(train_cfg_yaml["training"]["batch_size"]),
-        patience=int(train_cfg_yaml["training"].get("early_stop", {}).get("patience", 10)),
-        aux_weight=float(model_cfg["hmtl"]["lambda_aux"]),
-        optimizer=str(optimizer_cfg.get("name", "radam_lookahead")),
-        lookahead_k=int(optimizer_cfg.get("lookahead_sync_period", 6)),
-        lookahead_alpha=float(optimizer_cfg.get("lookahead_slow_step", 0.5)),
-        weight_decay=float(optimizer_cfg.get("weight_decay", 0.0)),
-        sigma_reg_weight=float(train_cfg_yaml["training"].get("sigma_reg_weight", 0.0)),
-        seed=seed,
-        task_type="regression",
-        show_progress=show_inner_progress,
-        amp_enabled=amp_enabled,
-        amp_dtype=amp_dtype,
-        amp_eval_enabled=amp_eval_enabled,
-        early_stop_metric=early_stop_metric,
-        hybrid_r_auc_weight=hybrid_weight,
-        grad_clip_norm=None if grad_clip_raw is None else float(grad_clip_raw),
-        lr_scheduler_name=str(scheduler_cfg.get("name", "none")),
-        lr_scheduler_eta_min_ratio=float(scheduler_cfg.get("eta_min_ratio", 0.05)),
-    )
-
-    input_dim = X_tr.shape[1]
-
-    if baseline_name == "single_mlp":
-        model = train_single_mlp_baseline(
-            X_tr=X_tr,
-            y_tr=y_tr,
-            X_va=X_va,
-            y_va=y_va,
-            input_dim=input_dim,
-            hidden_width=int(model_cfg["encoder"]["hidden_width"]),
-            depth=int(model_cfg["hmtl"]["high_layer"]),
-            alpha_dropout=float(model_cfg["encoder"]["alpha_dropout"]),
-            use_residual=bool(model_cfg["encoder"].get("residual", True)),
-            train_cfg=train_cfg,
-        )
-        y_pred, unc_total, unc_epi, unc_alea = ensemble_predict([model], X_te)
-
-    elif baseline_name == "flat_mtl":
-        model = train_flat_mtl_baseline(
-            X_tr=X_tr,
-            y_tr=y_tr,
-            X_va=X_va,
-            y_va=y_va,
-            input_dim=input_dim,
-            hidden_width=int(model_cfg["encoder"]["hidden_width"]),
-            depth=int(model_cfg["hmtl"]["high_layer"]),
-            alpha_dropout=float(model_cfg["encoder"]["alpha_dropout"]),
-            n_bins=int(model_cfg["hmtl"]["n_bins"]),
-            aux_weight=float(model_cfg["hmtl"]["lambda_aux"]),
-            use_residual=bool(model_cfg["encoder"].get("residual", True)),
-            train_cfg=train_cfg,
-        )
-        y_pred, unc_total, unc_epi, unc_alea = ensemble_predict([model], X_te)
-
-    elif baseline_name == "catboost":
+    if baseline_name == "catboost":
         ensemble_block = ensemble_cfg_yaml.get("ensemble", {})
         catboost_ref_models = int(
             ensemble_block.get("baseline_n_models", ensemble_block.get("n_models", 10))
         )
         catboost_n_models = min(10, catboost_ref_models)
-        model = train_catboost_baseline(
+        model = train_catboost_classification_baseline(
             X_tr=X_tr,
             y_tr=y_tr,
             X_va=X_va,
             y_va=y_va,
             n_models=catboost_n_models,
             random_seed=seed,
+            num_classes=num_classes,
         )
-        y_pred, unc_total, unc_epi, unc_alea = model.predict(X_te)
+        probs_mean, unc_total, unc_epi, unc_alea = model.predict(X_te)
+
+        # Compute logits from probs for metric computation
+        logits = np.log(np.clip(probs_mean, 1e-12, 1.0))
+
+        metrics = compute_classification_metrics(
+            y_true=y_te,
+            logits=logits,
+            probs=probs_mean,
+            uncertainty=unc_total,
+            num_classes=num_classes,
+        )
+
+        result = _classification_metrics_to_dict(metrics)
+        result["mean_uncertainty"] = float(np.mean(unc_total))
+        result["mean_epistemic"] = float(np.mean(unc_epi))
+        result["mean_aleatoric"] = float(np.mean(unc_alea))
+        return result
 
     else:
-        raise ValueError(f"Unsupported baseline: {baseline_name}")
-
-    metrics = evaluate_comprehensive(
-        y_true=y_te,
-        y_pred=y_pred,
-        uncertainty=unc_total,
-        epistemic=unc_epi,
-        aleatoric=unc_alea,
-    )
-
-    return _metrics_to_dict(metrics)
+        raise ValueError(
+            f"Unsupported classification baseline: {baseline_name}. "
+            f"Only 'catboost' is supported for classification. "
+            f"SingleMLP and FlatMTL baselines are regression-specific."
+        )
 
 
 def run_size_seed_trial(
@@ -812,11 +804,12 @@ def run_size_seed_trial(
     train_cfg_yaml: dict[str, Any],
     ensemble_cfg_yaml: dict[str, Any],
     baselines: list[str],
+    num_classes: int,
     skip_hmtl: bool = False,
     show_inner_progress: bool = True,
 ) -> dict[str, Any]:
-    logger = get_logger("automlbenchmark")
-    early_stop_metric, _ = _resolve_regression_early_stop_settings(train_cfg_yaml)
+    logger = get_logger("classification_benchmark")
+    early_stop_metric = _resolve_classification_early_stop_settings(train_cfg_yaml)
 
     split = prepare_preprocessed_splits_for_size(
         df_train_full=df_train_full,
@@ -845,6 +838,7 @@ def run_size_seed_trial(
         "seed": int(seed),
         "status": "ok",
         "n_train_samples": int(split["n_train_samples"]),
+        "num_classes": int(num_classes),
         "hmtl": None,
         "hmtl_skipped": bool(skip_hmtl),
         "baselines": {},
@@ -856,14 +850,14 @@ def run_size_seed_trial(
     hmtl_metrics: dict[str, float] | None = None
     if not skip_hmtl:
         try:
-            hmtl_metrics = train_and_evaluate_hmtl(
+            hmtl_metrics = train_and_evaluate_hmtl_classification(
                 X_tr=split["X_tr"],
                 y_tr=split["y_tr"],
                 X_va=split["X_va"],
                 y_va=split["y_va"],
                 X_te=split["X_te"],
                 y_te=split["y_te"],
-                preprocessor=split["preprocessor"],
+                num_classes=num_classes,
                 model_cfg=model_cfg,
                 train_cfg_yaml=train_cfg_yaml,
                 ensemble_cfg_yaml=ensemble_cfg_yaml,
@@ -879,7 +873,7 @@ def run_size_seed_trial(
             is_bf16_issue = _is_bfloat16_error(exc)
             if not is_bf16_issue:
                 logger.exception(
-                    "HMTL failed for size %.0f%% seed %d: %s",
+                    "HMTL classification failed for size %.0f%% seed %d: %s",
                     size_ratio * 100,
                     seed,
                     exc,
@@ -904,14 +898,14 @@ def run_size_seed_trial(
                     retry_mode,
                 )
                 try:
-                    hmtl_metrics = train_and_evaluate_hmtl(
+                    hmtl_metrics = train_and_evaluate_hmtl_classification(
                         X_tr=split["X_tr"],
                         y_tr=split["y_tr"],
                         X_va=split["X_va"],
                         y_va=split["y_va"],
                         X_te=split["X_te"],
                         y_te=split["y_te"],
-                        preprocessor=split["preprocessor"],
+                        num_classes=num_classes,
                         model_cfg=model_cfg,
                         train_cfg_yaml=retry_train_cfg_yaml,
                         ensemble_cfg_yaml=ensemble_cfg_yaml,
@@ -947,7 +941,7 @@ def run_size_seed_trial(
                 if baseline_name == "catboost" and catboost_split is not None
                 else split
             )
-            baseline_metrics = train_and_evaluate_baseline(
+            baseline_metrics = train_and_evaluate_baseline_classification(
                 baseline_name=baseline_name,
                 X_tr=baseline_split["X_tr"],
                 y_tr=baseline_split["y_tr"],
@@ -955,6 +949,7 @@ def run_size_seed_trial(
                 y_va=baseline_split["y_va"],
                 X_te=baseline_split["X_te"],
                 y_te=baseline_split["y_te"],
+                num_classes=num_classes,
                 model_cfg=model_cfg,
                 train_cfg_yaml=train_cfg_yaml,
                 ensemble_cfg_yaml=ensemble_cfg_yaml,
@@ -1062,10 +1057,12 @@ def aggregate_size_seed_runs(
     if catboost_mean:
         size_summary["catboost"] = catboost_mean
     if catboost_delta:
-        if "delta_rmse" in catboost_delta:
-            size_summary["delta_rmse"] = catboost_delta["delta_rmse"]
-        if "delta_r_auc_mse" in catboost_delta:
-            size_summary["delta_r_auc_mse"] = catboost_delta["delta_r_auc_mse"]
+        if "delta_accuracy" in catboost_delta:
+            size_summary["delta_accuracy"] = catboost_delta["delta_accuracy"]
+        if "delta_balanced_accuracy" in catboost_delta:
+            size_summary["delta_balanced_accuracy"] = catboost_delta["delta_balanced_accuracy"]
+        if "delta_ece" in catboost_delta:
+            size_summary["delta_ece"] = catboost_delta["delta_ece"]
 
     return size_summary
 
@@ -1085,13 +1082,14 @@ def run_single_dataset_experiment(
     baselines: list[str],
     split_seed: int,
     output_dir: Path,
-    study_id: int,
+    study_id: int | None,
     config_paths: dict[str, str],
+    num_classes_override: int | None = None,
     skip_hmtl: bool = False,
     show_trial_progress: bool = False,
     show_inner_progress: bool = True,
 ) -> dict[str, Any]:
-    logger = get_logger("automlbenchmark")
+    logger = get_logger("classification_benchmark")
 
     dataset_name = _resolve_dataset_name(dataset_meta.dataset_id, dataset_meta.dataset_name)
     slug = _slugify(dataset_name)
@@ -1114,12 +1112,24 @@ def run_single_dataset_experiment(
         val_ratio=val_ratio,
         test_ratio=test_ratio,
         seed=split_seed,
+        stratify=True,
     )
+
+    # Detect number of classes
+    if num_classes_override is not None:
+        num_classes = num_classes_override
+    else:
+        y_all = df[target_col].values
+        num_classes = _detect_num_classes(y_all)
+
+    logger.info("Detected %d classes for dataset %s", num_classes, dataset_name)
 
     result: dict[str, Any] = {
         "dataset_id": int(dataset_meta.dataset_id),
         "dataset_name": dataset_name,
         "task_id": dataset_meta.task_id,
+        "task_type": "classification",
+        "num_classes": int(num_classes),
         "n_samples_total": int(len(df)),
         "n_samples_train": int(len(df_train_full)),
         "n_samples_valid": int(len(df_valid)),
@@ -1128,7 +1138,7 @@ def run_single_dataset_experiment(
         "target_column": target_col,
         "run_meta": {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "study_id": int(study_id),
+            "study_id": study_id,
             "seed_list": [int(s) for s in seeds],
             "n_requested_seeds": int(len(seeds)),
             "sizes": [float(s) for s in sizes],
@@ -1169,6 +1179,7 @@ def run_single_dataset_experiment(
                 size_ratio=size_ratio,
                 n_train_size=n_train_estimate,
                 n_features=n_features,
+                num_classes=num_classes,
             )
             effective_model_cfg = effective_bundle["model_cfg"]
             effective_train_cfg_yaml = effective_bundle["train_cfg_yaml"]
@@ -1207,6 +1218,7 @@ def run_single_dataset_experiment(
                     train_cfg_yaml=effective_train_cfg_yaml,
                     ensemble_cfg_yaml=effective_ensemble_cfg_yaml,
                     baselines=baselines,
+                    num_classes=num_classes,
                     skip_hmtl=skip_hmtl,
                     show_inner_progress=show_inner_progress,
                 )
@@ -1266,7 +1278,7 @@ def _build_dataset_failure_result(
     *,
     dataset_meta: DatasetMeta,
     exc: Exception,
-    study_id: int,
+    study_id: int | None,
     seed_list: list[int],
     sizes: list[float],
     baselines: list[str],
@@ -1275,10 +1287,11 @@ def _build_dataset_failure_result(
         "dataset_id": int(dataset_meta.dataset_id),
         "dataset_name": dataset_meta.dataset_name,
         "task_id": dataset_meta.task_id,
+        "task_type": "classification",
         "error": str(exc),
         "run_meta": {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "study_id": int(study_id),
+            "study_id": study_id,
             "seed_list": [int(s) for s in seed_list],
             "sizes": [float(s) for s in sizes],
             "baselines": baselines,
@@ -1328,7 +1341,6 @@ def _force_shutdown_process_pool(
     try:
         executor.shutdown(wait=False, cancel_futures=True)
     except TypeError:
-        # Python versions without cancel_futures still support non-blocking shutdown.
         executor.shutdown(wait=False)
     except Exception as exc:
         logger.warning("Non-blocking pool shutdown failed: %s", exc)
@@ -1396,7 +1408,7 @@ def _terminate_active_children(logger: logging.Logger) -> None:
             continue
 
 
-def run_automlbenchmark_experiments(
+def run_classification_benchmark_experiments(
     *,
     model_cfg_path: Path,
     train_cfg_path: Path,
@@ -1406,7 +1418,7 @@ def run_automlbenchmark_experiments(
     sizes: list[float],
     dataset_id: int | None,
     dataset_ids: list[int] | None,
-    study_id: int,
+    study_id: int | None,
     seed: int,
     seeds: list[int] | None,
     n_seeds: int,
@@ -1417,11 +1429,12 @@ def run_automlbenchmark_experiments(
     train_ratio: float,
     val_ratio: float,
     test_ratio: float,
+    num_classes_override: int | None = None,
     skip_hmtl: bool = False,
     skip_baselines: bool = False,
     high_level_progress_only: bool = False,
 ) -> list[dict[str, Any]]:
-    logger = get_logger("automlbenchmark")
+    logger = get_logger("classification_benchmark")
 
     if skip_baselines:
         baselines = []
@@ -1430,9 +1443,16 @@ def run_automlbenchmark_experiments(
 
     for baseline_name in baselines:
         if baseline_name not in SUPPORTED_BASELINES:
-            raise ValueError(
-                f"Unsupported baseline '{baseline_name}'. Supported: {SUPPORTED_BASELINES}"
-            )
+            if baseline_name in ("single_mlp", "flat_mtl"):
+                logger.warning(
+                    "Baseline '%s' is regression-specific and not supported for classification. Skipping.",
+                    baseline_name,
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported baseline '{baseline_name}'. Supported: {SUPPORTED_BASELINES}"
+                )
+    baselines = [b for b in baselines if b in SUPPORTED_BASELINES]
 
     if not np.isclose(train_ratio + val_ratio + test_ratio, 1.0):
         raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
@@ -1467,7 +1487,7 @@ def run_automlbenchmark_experiments(
             for did in selected_dataset_ids
         ]
     else:
-        datasets_info = get_regression_datasets(study_id=study_id)
+        datasets_info = get_classification_datasets(study_id=study_id)
         datasets_meta = [
             DatasetMeta(
                 dataset_id=int(info["dataset_id"]),
@@ -1485,7 +1505,7 @@ def run_automlbenchmark_experiments(
 
     effective_workers = min(max_dataset_workers, len(datasets_meta))
 
-    logger.info("Processing %d datasets", len(datasets_meta))
+    logger.info("Processing %d classification datasets", len(datasets_meta))
     logger.info("Dataset order: %s", "reverse" if reverse_dataset_order else "forward")
     logger.info(
         "Dataset workers: requested=%d effective=%d",
@@ -1540,6 +1560,7 @@ def run_automlbenchmark_experiments(
                         output_dir=output_dir,
                         study_id=study_id,
                         config_paths=config_paths,
+                        num_classes_override=num_classes_override,
                         show_trial_progress=high_level_progress_only,
                         show_inner_progress=not high_level_progress_only,
                     )
@@ -1567,8 +1588,6 @@ def run_automlbenchmark_experiments(
                 dataset_pbar.update(1)
         else:
             mp_context = multiprocessing.get_context("spawn")
-            # Keep only the parent dataset-level progress bar in parallel mode.
-            # Multiple per-worker tqdm bars tend to corrupt/hide the global bar.
             worker_show_trial_progress = False
             with futures.ProcessPoolExecutor(
                 max_workers=effective_workers,
@@ -1602,6 +1621,7 @@ def run_automlbenchmark_experiments(
                             output_dir=output_dir,
                             study_id=study_id,
                             config_paths=config_paths,
+                            num_classes_override=num_classes_override,
                             show_trial_progress=worker_show_trial_progress,
                             show_inner_progress=not high_level_progress_only,
                         )
@@ -1645,7 +1665,7 @@ def run_automlbenchmark_experiments(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run AutoMLBenchmark size experiments")
+    parser = argparse.ArgumentParser(description="Run Classification Benchmark experiments")
     parser.add_argument("--model", default="configs/model_snn.yaml", help="Path to model config")
     parser.add_argument("--train", default="configs/train.yaml", help="Path to train config")
     parser.add_argument("--ensemble", default="configs/ensemble.yaml", help="Path to ensemble config")
@@ -1656,7 +1676,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--output",
-        default="experiments/automlbenchmark",
+        default="experiments/classification_benchmark",
         help="Directory for experiment outputs",
     )
     parser.add_argument(
@@ -1674,7 +1694,12 @@ def main() -> None:
         default=None,
         help="Run only these dataset IDs (space-separated list)",
     )
-    parser.add_argument("--study-id", type=int, default=269, help="OpenML study ID")
+    parser.add_argument(
+        "--study-id",
+        type=int,
+        default=None,
+        help="OpenML study ID (default: None, uses built-in catalog)",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Base random seed")
     parser.add_argument("--seeds", nargs="+", type=int, default=None, help="Explicit seed list")
     parser.add_argument(
@@ -1702,11 +1727,17 @@ def main() -> None:
     parser.add_argument(
         "--baselines",
         nargs="+",
-        default=["catboost", "single_mlp"],
+        default=["catboost"],
         help=(
             "Baselines to compare against HMTL. "
-            "Supported: catboost single_mlp flat_mtl"
+            "Supported for classification: catboost"
         ),
+    )
+    parser.add_argument(
+        "--num-classes",
+        type=int,
+        default=None,
+        help="Override number of classes (auto-detected if not provided)",
     )
     parser.add_argument(
         "--skip-hmtl",
@@ -1739,15 +1770,15 @@ def main() -> None:
         for noisy_logger in ("openml", "urllib3", "matplotlib", "numexpr"):
             logging.getLogger(noisy_logger).setLevel(logging.ERROR)
 
-    logger = get_logger("automlbenchmark")
+    logger = get_logger("classification_benchmark")
     logger.info("=" * 80)
-    logger.info("AutoML Benchmark Regression Experiments")
+    logger.info("Classification Benchmark Experiments")
     logger.info("=" * 80)
 
     output_dir = Path(args.output)
 
     try:
-        results = run_automlbenchmark_experiments(
+        results = run_classification_benchmark_experiments(
             model_cfg_path=Path(args.model),
             train_cfg_path=Path(args.train),
             ensemble_cfg_path=Path(args.ensemble),
@@ -1764,6 +1795,7 @@ def main() -> None:
             reverse_dataset_order=args.reverse_dataset_order,
             max_dataset_workers=args.max_dataset_workers,
             baselines=args.baselines,
+            num_classes_override=args.num_classes,
             skip_hmtl=args.skip_hmtl,
             skip_baselines=args.skip_baselines,
             train_ratio=args.train_ratio,
@@ -1780,7 +1812,7 @@ def main() -> None:
     with open(aggregated_path, "w", encoding="utf-8") as file:
         json.dump(results, file, indent=2)
 
-    logger.info("\nAll experiments completed")
+    logger.info("\nAll classification experiments completed")
     logger.info("Aggregated results saved to %s", aggregated_path)
     logger.info("=" * 80)
 

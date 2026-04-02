@@ -32,7 +32,7 @@ def r_auc_mse(mse_per_point: np.ndarray, uncertainty: np.ndarray) -> float:
     
     x, y = error_retention_curve(mse_per_point, uncertainty)
     # интеграл по кусочно-линейной кривой
-    score = float(np.trapz(y, x))
+    score = float(np.trapezoid(y, x))
     
     logger.debug(f"R-AUC MSE score: {score:.6f}")
     return score

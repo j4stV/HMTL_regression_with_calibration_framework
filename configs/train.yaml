@@ -4,6 +4,10 @@ optimizer:
   lookahead_sync_period: 6 
   lookahead_slow_step: 0.5  
   weight_decay: 0.0  # No weight decay 
+  grad_clip_norm: 1.0
+  scheduler:
+    name: cosine
+    eta_min_ratio: 0.05
 
 # Compatibility fallback for older runners that read top-level AMP config.
 amp:
@@ -24,6 +28,21 @@ training:
     metric: r_auc_mse
     patience: 15
     mode: min
+
+# Adversarial augmentations (disabled by default)
+  # adversarial:
+  #   enabled: false
+  #   method: fgsm          # "fgsm" or "pgd"
+  #   epsilon: 0.01         # perturbation magnitude
+  #   alpha: 0.005          # PGD step size
+  #   pgd_steps: 3          # PGD iterations
+  #   adv_weight: 0.5       # weight of adversarial loss
+
+# Conformal prediction settings
+# conformal:
+#   method: symmetric       # "symmetric" (default) or "cqr"
+#   quantiles: [0.05, 0.95] # quantile levels for CQR
+#   cqr_weight: 0.5         # quantile loss weight during training
 
 logging:
   mlflow:

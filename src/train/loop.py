@@ -14,6 +14,7 @@ from src.losses.nll import gaussian_nll
 from src.eval.r_auc_mse import r_auc_mse
 from src.utils.logger import get_logger
 from src.train.optimizers import create_radam_lookahead
+from src.train.adversarial import AdversarialConfig, generate_adversarial
 from src.models.contrastive import n_pairs_loss
 
 
@@ -37,6 +38,15 @@ class TrainConfig:
     amp_eval_enabled: bool = True
     early_stop_metric: str = "hybrid_rmse_rauc"  # "hybrid_rmse_rauc", "rmse", or "r_auc_mse"
     hybrid_r_auc_weight: float = 0.25
+    grad_clip_norm: float | None = 1.0
+    lr_scheduler_name: str = "none"  # "none" or "cosine"
+    lr_scheduler_eta_min_ratio: float = 0.05
+    # CQR (Conformal Quantile Regression)
+    cqr_enabled: bool = False
+    cqr_quantiles: list[float] | None = None
+    cqr_weight: float = 0.5
+    # Adversarial augmentations
+    adversarial: AdversarialConfig | None = None
 
 
 def _is_mps_available() -> bool:
@@ -182,6 +192,23 @@ def _normalize_regression_early_stop_metric(metric_name: str) -> str:
     return aliases[normalized]
 
 
+def _normalize_lr_scheduler_name(scheduler_name: str) -> str:
+    normalized = str(scheduler_name).strip().lower()
+    aliases = {
+        "none": "none",
+        "off": "none",
+        "disabled": "none",
+        "cosine": "cosine",
+        "cosineannealing": "cosine",
+        "cosine_annealing": "cosine",
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            f"Unsupported LR scheduler '{scheduler_name}'. Expected one of: none, cosine."
+        )
+    return aliases[normalized]
+
+
 def _resolve_regression_validation_score(
     *,
     metric_name: str,
@@ -240,6 +267,63 @@ def compute_bins(y: np.ndarray, n_bins: int, use_rounding: bool = False) -> np.n
         quantiles[0] -= 1e-9
         quantiles[-1] += 1e-9
         return np.digitize(y, quantiles[1:-1])
+
+
+def _compute_aux_loss(aux_task, aux_output, yb_bin, yb, ce, model):
+    """Compute auxiliary task loss based on aux_task type."""
+    if aux_task == "bins":
+        return ce(aux_output, yb_bin)
+    elif aux_task == "contrastive":
+        return n_pairs_loss(aux_output, yb_bin, temperature=0.5)
+    elif aux_task == "reconstruction":
+        from src.losses.aux_losses import reconstruction_loss
+        h_low = getattr(model, '_cached_h_low', None)
+        if h_low is not None:
+            return reconstruction_loss(h_low.detach(), aux_output)
+        return torch.tensor(0.0, device=aux_output.device)
+    elif aux_task == "rank":
+        from src.losses.aux_losses import pairwise_ranking_loss
+        return pairwise_ranking_loss(aux_output, yb)
+    elif aux_task == "multi":
+        # aux_output is a dict {task_name: output}
+        total_aux = torch.tensor(0.0, device=yb.device)
+        multi_weights = getattr(model, 'multi_aux_weights', {})
+        h_low = getattr(model, '_cached_h_low', None)
+        for name, out in aux_output.items():
+            w = multi_weights.get(name, 1.0)
+            if name == "bins":
+                total_aux = total_aux + w * ce(out, yb_bin)
+            elif name == "contrastive":
+                total_aux = total_aux + w * n_pairs_loss(out, yb_bin, temperature=0.5)
+            elif name == "reconstruction":
+                from src.losses.aux_losses import reconstruction_loss
+                if h_low is not None:
+                    total_aux = total_aux + w * reconstruction_loss(h_low.detach(), out)
+            elif name == "rank":
+                from src.losses.aux_losses import pairwise_ranking_loss
+                total_aux = total_aux + w * pairwise_ranking_loss(out, yb)
+        return total_aux
+    else:
+        return torch.tensor(0.0, device=aux_output.device if hasattr(aux_output, 'device') else yb.device)
+
+
+def _resolve_classification_val_score(
+    metric_name: str,
+    nll: float,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> float:
+    """Return a classification validation score (lower is better)."""
+    from sklearn.metrics import balanced_accuracy_score, f1_score
+
+    metric = str(metric_name).strip().lower()
+    if metric == "balanced_accuracy":
+        return -float(balanced_accuracy_score(y_true, y_pred))
+    if metric == "accuracy":
+        return -float(np.mean(y_pred == y_true))
+    if metric == "f1_weighted":
+        return -float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
+    return nll
 
 
 def train_model(
@@ -388,6 +472,27 @@ def train_model(
     else:
         optim = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
         logger.info(f"Using AdamW optimizer (weight_decay={cfg.weight_decay})")
+
+    normalized_scheduler = _normalize_lr_scheduler_name(cfg.lr_scheduler_name)
+    scheduler = None
+    if normalized_scheduler == "cosine":
+        eta_min_ratio = max(0.0, float(cfg.lr_scheduler_eta_min_ratio))
+        eta_min = float(cfg.lr) * eta_min_ratio
+        scheduler_optimizer = getattr(optim, "base_optimizer", optim)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            scheduler_optimizer,
+            T_max=max(1, int(cfg.epochs)),
+            eta_min=eta_min,
+        )
+        logger.info(
+            "Using CosineAnnealingLR scheduler (T_max=%d, eta_min=%.8f, eta_min_ratio=%.4f)",
+            max(1, int(cfg.epochs)),
+            eta_min,
+            eta_min_ratio,
+        )
+    else:
+        logger.info("LR scheduler disabled")
+    logger.info("Gradient clipping: %s", cfg.grad_clip_norm)
     
     ce = nn.CrossEntropyLoss()
 
@@ -442,13 +547,9 @@ def train_model(
                         loss = gaussian_nll(mu, sigma, yb, sigma_reg_weight=cfg.sigma_reg_weight)
 
                         if aux_output is not None:
-                            if aux_task == "bins":
-                                # Classification head
-                                loss = loss + cfg.aux_weight * ce(aux_output, yb_bin)
-                            elif aux_task == "contrastive":
-                                # Contrastive learning (temperature=0.5)
-                                aux_loss = n_pairs_loss(aux_output, yb_bin, temperature=0.5)
-                                loss = loss + cfg.aux_weight * aux_loss
+                            loss = loss + cfg.aux_weight * _compute_aux_loss(
+                                aux_task, aux_output, yb_bin, yb, ce, model
+                            )
 
                 else:  # classification
                     # Classification: use task_loss or cross-entropy
@@ -468,19 +569,66 @@ def train_model(
                     # Add auxiliary loss if available
                     if len(output) == 3 and output[2] is not None:
                         aux_output = output[2]
-                        if aux_task == "bins":
-                            loss = loss + cfg.aux_weight * ce(aux_output, yb_bin)
-                        elif aux_task == "contrastive":
-                            aux_loss = n_pairs_loss(aux_output, yb_bin, temperature=0.5)
-                            loss = loss + cfg.aux_weight * aux_loss
-            
+                        loss = loss + cfg.aux_weight * _compute_aux_loss(
+                            aux_task, aux_output, yb_bin, yb, ce, model
+                        )
+
+                # CQR: add quantile loss if enabled
+                if cfg.cqr_enabled and hasattr(model, 'quantile_head') and model.quantile_head is not None:
+                    from src.losses.quantile import pinball_loss
+                    q_preds = model.predict_quantiles(xb)
+                    q_target = yb.view(-1, 1) if yb.dim() == 1 else yb
+                    cqr_quantiles = cfg.cqr_quantiles or [0.05, 0.95]
+                    q_loss = pinball_loss(q_preds, q_target, cqr_quantiles)
+                    loss = loss + cfg.cqr_weight * q_loss
+
+                # Adversarial augmentations
+                adv_cfg = cfg.adversarial
+                if adv_cfg is not None and adv_cfg.enabled:
+                    def _adv_loss_fn(x_input):
+                        with _autocast_if_needed(enabled=amp_state.enabled, dtype=amp_state.dtype):
+                            adv_out = model(x_input)
+                            if cfg.task_type == "regression":
+                                if len(adv_out) == 2:
+                                    mu_a, sigma_a = adv_out
+                                else:
+                                    mu_a, sigma_a, _ = adv_out
+                                return gaussian_nll(mu_a, sigma_a, yb, sigma_reg_weight=cfg.sigma_reg_weight)
+                            else:
+                                logits_a = adv_out[0]
+                                if task_loss is not None:
+                                    return task_loss(logits_a, yb)
+                                return ce(logits_a, yb)
+
+                    x_adv = generate_adversarial(model, xb, _adv_loss_fn, adv_cfg)
+                    with _autocast_if_needed(enabled=amp_state.enabled, dtype=amp_state.dtype):
+                        adv_output = model(x_adv)
+                        if cfg.task_type == "regression":
+                            if len(adv_output) == 2:
+                                mu_adv, sigma_adv = adv_output
+                            else:
+                                mu_adv, sigma_adv, _ = adv_output
+                            adv_loss_val = gaussian_nll(mu_adv, sigma_adv, yb, sigma_reg_weight=cfg.sigma_reg_weight)
+                        else:
+                            logits_adv = adv_output[0]
+                            if task_loss is not None:
+                                adv_loss_val = task_loss(logits_adv, yb)
+                            else:
+                                adv_loss_val = ce(logits_adv, yb)
+                    loss = loss + adv_cfg.adv_weight * adv_loss_val
+
             optim.zero_grad()
             if scaler is not None:
                 scaler.scale(loss).backward()
+                if cfg.grad_clip_norm is not None and cfg.grad_clip_norm > 0:
+                    scaler.unscale_(optim)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
                 scaler.step(optim)
                 scaler.update()
             else:
                 loss.backward()
+                if cfg.grad_clip_norm is not None and cfg.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
                 optim.step()
             
             epoch_loss += loss.item()
@@ -549,9 +697,15 @@ def train_model(
 
                 # Compute metrics
                 accuracy = float(np.mean(y_pred == y_true))
-                # Use negative log-likelihood as validation score (lower is better)
                 nll = float(np.mean(-np.log(probs_val[np.arange(len(y_true)), y_true.astype(int)] + 1e-10)))
-                score = nll
+
+                # Resolve classification early-stop score (lower is better)
+                score = _resolve_classification_val_score(
+                    metric_name=cfg.early_stop_metric,
+                    nll=nll,
+                    y_true=y_true,
+                    y_pred=y_pred,
+                )
                 rmse = 0.0  # Not applicable for classification
                 mae = 0.0  # Not applicable for classification
                 val_r_auc_mse = 0.0
@@ -564,6 +718,7 @@ def train_model(
             "patience": f"{wait}/{cfg.patience}"
         })
 
+        stop_training = False
         if score < best:
             improvement = best - score if best != float("inf") else 0.0
             best = score
@@ -580,14 +735,16 @@ def train_model(
             if wait >= cfg.patience:
                 logger.info(f"Early stopping triggered at epoch {epoch+1} (patience: {cfg.patience})")
                 early_stop_epoch = epoch
-                epoch_pbar.close()
-                break
-        
+                stop_training = True
+
+        current_lr = float(optim.param_groups[0]["lr"]) if optim.param_groups else float(cfg.lr)
+
         if history is not None:
             if cfg.task_type == "regression":
                 history.append({
                     "epoch": epoch,
                     "train_loss": float(avg_train_loss),
+                    "lr": current_lr,
                     "val_score": float(score),
                     "val_metric": _normalize_regression_early_stop_metric(cfg.early_stop_metric),
                     "val_r_auc_mse": float(val_r_auc_mse),
@@ -598,9 +755,17 @@ def train_model(
                 history.append({
                     "epoch": epoch,
                     "train_loss": float(avg_train_loss),
+                    "lr": current_lr,
                     "val_nll": float(score),
                     "val_accuracy": float(accuracy),
                 })
+
+        if scheduler is not None:
+            scheduler.step()
+
+        if stop_training:
+            epoch_pbar.close()
+            break
     
     if history_meta is not None:
         history_meta["best_epoch"] = best_epoch

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
+from http.client import IncompleteRead
+from pathlib import Path
+from typing import Optional, Tuple
+
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
-from typing import Tuple, Optional
-from pathlib import Path
-from http.client import IncompleteRead
 
 try:
     import openml
@@ -20,6 +22,13 @@ from src.utils.logger import get_logger, log_timing
 
 
 logger = get_logger("data.openml_loader")
+
+
+@dataclass(frozen=True)
+class LoadedDatasetBundle:
+    df: pd.DataFrame
+    target_column: str
+    categorical_columns: list[str]
 
 
 def _require_openml():
@@ -283,6 +292,290 @@ def get_regression_datasets(study_id: int = 269) -> list[dict]:
         raise
 
 
+_CLASSIFICATION_DATASET_CATALOG: list[dict] = [
+    {"dataset_id": 31, "name": "credit-g", "task_id": None},
+    {"dataset_id": 37, "name": "diabetes", "task_id": None},
+    {"dataset_id": 44, "name": "spambase", "task_id": None},
+    {"dataset_id": 1462, "name": "banknote-authentication", "task_id": None},
+    {"dataset_id": 1489, "name": "phoneme", "task_id": None},
+    {"dataset_id": 6, "name": "letter", "task_id": None},
+    {"dataset_id": 23, "name": "cmc", "task_id": None},
+    {"dataset_id": 1067, "name": "kc1", "task_id": None},
+    {"dataset_id": 40975, "name": "car", "task_id": None},
+    {"dataset_id": 40983, "name": "wilt", "task_id": None},
+    {"dataset_id": 40984, "name": "segment", "task_id": None},
+]
+
+
+def get_classification_datasets(study_id: int | None = None) -> list[dict]:
+    """Get list of classification datasets.
+
+    If ``study_id`` is provided, fetches datasets from the given OpenML study
+    (same mechanism as :func:`get_regression_datasets`).  Otherwise returns a
+    hardcoded catalog of well-known binary and multiclass datasets.
+
+    Returns:
+        List of dicts with keys ``dataset_id``, ``name``, ``task_id``.
+    """
+    if study_id is None:
+        logger.info(
+            "Using built-in classification dataset catalog (%d datasets)",
+            len(_CLASSIFICATION_DATASET_CATALOG),
+        )
+        return list(_CLASSIFICATION_DATASET_CATALOG)
+
+    # Fetch from OpenML study – reuse the same logic as regression.
+    logger.info("Fetching classification datasets from OpenML study %d ...", study_id)
+    _require_openml()
+
+    try:
+        suite = openml.study.get_suite(study_id)
+        logger.info("Found %d tasks in study %d", len(suite.tasks), study_id)
+
+        datasets: list[dict] = []
+        for task in suite.tasks:
+            try:
+                if isinstance(task, int):
+                    task_obj = openml.tasks.get_task(task)
+                else:
+                    task_obj = task
+
+                dataset_name = None
+                if hasattr(task_obj, "name"):
+                    dataset_name = task_obj.name
+                elif hasattr(task_obj, "dataset_name"):
+                    dataset_name = task_obj.dataset_name
+                else:
+                    try:
+                        ds = openml.datasets.get_dataset(task_obj.dataset_id)
+                        dataset_name = ds.name
+                    except Exception:
+                        dataset_name = f"dataset_{task_obj.dataset_id}"
+
+                datasets.append({
+                    "task_id": task_obj.task_id,
+                    "dataset_id": task_obj.dataset_id,
+                    "name": dataset_name,
+                })
+            except Exception as exc:
+                tid = str(task) if isinstance(task, int) else getattr(task, "task_id", "unknown")
+                logger.warning("Failed to get info for task %s: %s", tid, exc)
+                continue
+
+        logger.info("Successfully retrieved %d classification datasets", len(datasets))
+        return datasets
+
+    except Exception as exc:
+        logger.error("Failed to fetch datasets from study %d: %s", study_id, exc)
+        raise
+
+
+def _load_dataset_components(
+    dataset_id: int,
+    target_column: Optional[str] = None,
+) -> tuple[pd.DataFrame, pd.Series | np.ndarray, str, list[str]]:
+    dataset = _load_openml_dataset_with_retry(dataset_id)
+    logger.info(f"Dataset loaded: {dataset.name}")
+
+    try:
+        import inspect
+
+        with open(log_path, "a", encoding="utf-8") as f:
+            get_data_sig = inspect.signature(dataset.get_data)
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run3",
+                "hypothesisId": "G",
+                "location": "openml_loader.py:80",
+                "message": "Checking get_data signature",
+                "data": {
+                    "dataset_id": dataset_id,
+                    "get_data_params": list(get_data_sig.parameters.keys()),
+                    "get_data_defaults": {
+                        k: str(v.default) if v.default != inspect.Parameter.empty else None
+                        for k, v in get_data_sig.parameters.items()
+                    },
+                },
+                "timestamp": int(__import__("time").time() * 1000),
+            }) + "\n")
+    except Exception:
+        pass
+
+    try:
+        result = dataset.get_data(
+            target=target_column or dataset.default_target_attribute,
+            return_attribute_names=True,
+        )
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run3",
+                    "hypothesisId": "H",
+                    "location": "openml_loader.py:265",
+                    "message": "get_data result structure",
+                    "data": {
+                        "dataset_id": dataset_id,
+                        "result_type": str(type(result)),
+                        "result_len": len(result) if isinstance(result, (tuple, list)) else None,
+                        "result_types": [str(type(r)) for r in result] if isinstance(result, (tuple, list)) else None,
+                    },
+                    "timestamp": int(__import__("time").time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+
+        if isinstance(result, tuple):
+            if len(result) >= 2:
+                X, y = result[0], result[1]
+                attribute_names = result[2] if len(result) >= 3 and result[2] is not None else dataset.features
+                categorical_indicator = None
+            else:
+                raise ValueError(f"Unexpected get_data() return format: {len(result)} elements")
+        else:
+            raise ValueError(f"Unexpected get_data() return type: {type(result)}")
+    except Exception as e:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run3",
+                    "hypothesisId": "I",
+                    "location": "openml_loader.py:299",
+                    "message": "Trying old API after new API failed",
+                    "data": {
+                        "dataset_id": dataset_id,
+                        "error_type": str(type(e).__name__),
+                        "error": str(e),
+                    },
+                    "timestamp": int(__import__("time").time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+
+        try:
+            X, y, categorical_indicator, attribute_names = dataset.get_data(
+                target=target_column or dataset.default_target_attribute,
+                return_categorical_indicator=True,
+                return_attribute_names=True,
+            )
+        except Exception as e2:
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run3",
+                        "hypothesisId": "J",
+                        "location": "openml_loader.py:325",
+                        "message": "Trying minimal API",
+                        "data": {
+                            "dataset_id": dataset_id,
+                            "error_type": str(type(e2).__name__),
+                            "error": str(e2),
+                        },
+                        "timestamp": int(__import__("time").time() * 1000),
+                    }) + "\n")
+            except Exception:
+                pass
+
+            result = dataset.get_data(target=target_column or dataset.default_target_attribute)
+            if isinstance(result, tuple) and len(result) >= 2:
+                X, y = result[0], result[1]
+                attribute_names = dataset.features if hasattr(dataset, "features") else None
+                categorical_indicator = None
+            else:
+                raise ValueError(f"Unexpected get_data() return format: {type(result)}")
+
+    if isinstance(X, pd.DataFrame):
+        df = X.copy()
+    else:
+        df = pd.DataFrame(X, columns=attribute_names)
+
+    if attribute_names is not None and len(attribute_names) == df.shape[1]:
+        df.columns = list(attribute_names)
+
+    target_col = target_column or dataset.default_target_attribute
+    categorical_columns: list[str] = []
+    if categorical_indicator is not None:
+        indicator = list(categorical_indicator)
+        if len(indicator) == len(df.columns):
+            categorical_columns = [
+                str(column)
+                for column, is_categorical in zip(df.columns, indicator)
+                if bool(is_categorical)
+            ]
+
+    return df, y, target_col, categorical_columns
+
+
+def _normalize_bundle_features(
+    df: pd.DataFrame,
+    categorical_columns: list[str],
+) -> tuple[pd.DataFrame, list[str]]:
+    preserved_categoricals = {column for column in categorical_columns if column in df.columns}
+    normalized_features: dict[str, pd.Series] = {}
+
+    for col in df.columns:
+        col_series = df[col]
+        if col in preserved_categoricals:
+            normalized_features[col] = col_series.astype("object")
+            continue
+
+        if pd.api.types.is_numeric_dtype(col_series):
+            normalized_features[col] = pd.to_numeric(col_series, errors="coerce").astype(np.float64)
+            continue
+
+        numeric_series = pd.to_numeric(col_series, errors="coerce")
+        n_non_null = int(col_series.notna().sum())
+        n_numeric = int(numeric_series.notna().sum())
+        if n_numeric == n_non_null:
+            normalized_features[col] = numeric_series.astype(np.float64)
+            logger.debug("Column '%s' parsed as numeric from non-numeric dtype", col)
+            continue
+
+        preserved_categoricals.add(col)
+        normalized_features[col] = col_series.astype("object")
+
+    normalized_df = pd.DataFrame(normalized_features, index=df.index)
+    ordered_categoricals = [str(column) for column in df.columns if column in preserved_categoricals]
+    return normalized_df, ordered_categoricals
+
+
+def load_dataset_bundle(
+    dataset_id: int,
+    target_column: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+) -> LoadedDatasetBundle:
+    """Load a dataset from OpenML while preserving categorical metadata."""
+    del cache_dir  # Unused; retained for API compatibility.
+    logger.info(f"Loading dataset {dataset_id} from OpenML...")
+    _require_openml()
+
+    try:
+        df_features, y, target_col, categorical_columns = _load_dataset_components(
+            dataset_id=dataset_id,
+            target_column=target_column,
+        )
+        normalized_features, categorical_columns = _normalize_bundle_features(
+            df_features,
+            categorical_columns,
+        )
+        normalized_features[target_col] = y
+
+        logger.info(f"Dataset shape: {normalized_features.shape}, target: {target_col}")
+        logger.info(f"Features: {len(normalized_features.columns) - 1}, samples: {len(normalized_features)}")
+        logger.info("Detected %d categorical feature(s)", len(categorical_columns))
+
+        return LoadedDatasetBundle(
+            df=normalized_features,
+            target_column=target_col,
+            categorical_columns=categorical_columns,
+        )
+    except Exception as e:
+        logger.error(f"Failed to load dataset {dataset_id}: {e}")
+        raise
+
+
 def load_dataset(
     dataset_id: int,
     target_column: Optional[str] = None,
@@ -298,188 +591,33 @@ def load_dataset(
     Returns:
         Tuple of (dataframe, target_column_name)
     """
-    logger.info(f"Loading dataset {dataset_id} from OpenML...")
-    _require_openml()
-    
-    try:
-        dataset = _load_openml_dataset_with_retry(dataset_id)
-        logger.info(f"Dataset loaded: {dataset.name}")
-        
-        # Get data - check API compatibility
-        # #region agent log
-        try:
-            import inspect
-            with open(log_path, "a", encoding="utf-8") as f:
-                get_data_sig = inspect.signature(dataset.get_data)
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run3",
-                    "hypothesisId": "G",
-                    "location": "openml_loader.py:80",
-                    "message": "Checking get_data signature",
-                    "data": {
-                        "dataset_id": dataset_id,
-                        "get_data_params": list(get_data_sig.parameters.keys()),
-                        "get_data_defaults": {k: str(v.default) if v.default != inspect.Parameter.empty else None 
-                                             for k, v in get_data_sig.parameters.items()},
-                    },
-                    "timestamp": int(__import__("time").time() * 1000)
-                }) + "\n")
-        except Exception as e:
-            pass
-        # #endregion agent log
-        
-        # Try different API versions
-        try:
-            # Try new API (without return_categorical_indicator)
-            result = dataset.get_data(
-                target=target_column or dataset.default_target_attribute,
-                return_attribute_names=True,
-            )
-            # #region agent log
-            try:
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run3",
-                        "hypothesisId": "H",
-                        "location": "openml_loader.py:265",
-                        "message": "get_data result structure",
-                        "data": {
-                            "dataset_id": dataset_id,
-                            "result_type": str(type(result)),
-                            "result_len": len(result) if isinstance(result, (tuple, list)) else None,
-                            "result_types": [str(type(r)) for r in result] if isinstance(result, (tuple, list)) else None,
-                        },
-                        "timestamp": int(__import__("time").time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion agent log
-            
-            if isinstance(result, tuple):
-                if len(result) >= 2:
-                    X, y = result[0], result[1]
-                    # Try to get categorical indicator and attribute names
-                    if len(result) >= 3:
-                        attribute_names = result[2] if result[2] is not None else dataset.features
-                    else:
-                        attribute_names = dataset.features
-                    categorical_indicator = None  # Not available in new API
-                else:
-                    raise ValueError(f"Unexpected get_data() return format: {len(result)} elements")
-            else:
-                raise ValueError(f"Unexpected get_data() return type: {type(result)}")
-        except Exception as e:
-            # Try old API with return_categorical_indicator (catch all exceptions, not just TypeError)
-            # #region agent log
-            try:
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run3",
-                        "hypothesisId": "I",
-                        "location": "openml_loader.py:299",
-                        "message": "Trying old API after new API failed",
-                        "data": {
-                            "dataset_id": dataset_id,
-                            "error_type": str(type(e).__name__),
-                            "error": str(e),
-                        },
-                        "timestamp": int(__import__("time").time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion agent log
-            
-            try:
-                X, y, categorical_indicator, attribute_names = dataset.get_data(
-                    target=target_column or dataset.default_target_attribute,
-                    return_categorical_indicator=True,
-                    return_attribute_names=True,
-                )
-            except Exception as e2:
-                # If old API also fails, try minimal API
-                # #region agent log
-                try:
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run3",
-                            "hypothesisId": "J",
-                            "location": "openml_loader.py:325",
-                            "message": "Trying minimal API",
-                            "data": {
-                                "dataset_id": dataset_id,
-                                "error_type": str(type(e2).__name__),
-                                "error": str(e2),
-                            },
-                            "timestamp": int(__import__("time").time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion agent log
-                
-                # Try minimal API - just get data without extra parameters
-                result = dataset.get_data(target=target_column or dataset.default_target_attribute)
-                if isinstance(result, tuple) and len(result) >= 2:
-                    X, y = result[0], result[1]
-                    attribute_names = dataset.features if hasattr(dataset, "features") else None
-                    categorical_indicator = None
-                else:
-                    raise ValueError(f"Unexpected get_data() return format: {type(result)}")
-        
-        # Convert to DataFrame
-        if isinstance(X, pd.DataFrame):
-            df = X.copy()
-        else:
-            df = pd.DataFrame(X, columns=attribute_names)
-        
-        # Normalize feature dtypes to numeric floats for downstream preprocessing.
-        # This handles object/category/string columns and preserves missing values.
-        normalized_features: dict[str, pd.Series] = {}
-        for col in df.columns:
-            col_series = df[col]
+    del cache_dir  # Unused; retained for API compatibility.
+    bundle = load_dataset_bundle(dataset_id=dataset_id, target_column=target_column)
+    feature_df = bundle.df.drop(columns=[bundle.target_column], errors="ignore")
 
-            if pd.api.types.is_numeric_dtype(col_series):
-                normalized_features[col] = pd.to_numeric(col_series, errors="coerce").astype(np.float64)
-                continue
+    normalized_features: dict[str, pd.Series] = {}
+    categorical_set = set(bundle.categorical_columns)
+    for col in feature_df.columns:
+        col_series = feature_df[col]
+        if col not in categorical_set:
+            normalized_features[col] = pd.to_numeric(col_series, errors="coerce").astype(np.float64)
+            continue
 
-            numeric_series = pd.to_numeric(col_series, errors="coerce")
-            n_non_null = int(col_series.notna().sum())
-            n_numeric = int(numeric_series.notna().sum())
-            if n_numeric == n_non_null:
-                normalized_features[col] = numeric_series.astype(np.float64)
-                logger.debug("Column '%s' parsed as numeric from non-numeric dtype", col)
-                continue
+        categorical_codes = pd.Categorical(col_series).codes.astype(np.float64)
+        categorical_codes[categorical_codes < 0] = np.nan
+        normalized_features[col] = pd.Series(categorical_codes, index=feature_df.index)
+        n_categories = int(pd.Series(categorical_codes).dropna().nunique())
+        logger.debug(
+            "Encoded categorical column '%s' using category codes (%d categories)",
+            col,
+            n_categories,
+        )
 
-            # Fallback: stable categorical coding with NaN for missing entries.
-            categorical_codes = pd.Categorical(col_series).codes.astype(np.float64)
-            categorical_codes[categorical_codes < 0] = np.nan
-            normalized_features[col] = pd.Series(categorical_codes, index=col_series.index)
-            n_categories = int(pd.Series(categorical_codes).dropna().nunique())
-            logger.debug(
-                "Encoded categorical column '%s' using category codes (%d categories)",
-                col,
-                n_categories,
-            )
-
-        df = pd.DataFrame(normalized_features, index=df.index)
-        for col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").astype(np.float64)
-        
-        # Add target column
-        target_col = target_column or dataset.default_target_attribute
-        df[target_col] = y
-        
-        logger.info(f"Dataset shape: {df.shape}, target: {target_col}")
-        logger.info(f"Features: {len(df.columns) - 1}, samples: {len(df)}")
-        
-        return df, target_col
-        
-    except Exception as e:
-        logger.error(f"Failed to load dataset {dataset_id}: {e}")
-        raise
+    df = pd.DataFrame(normalized_features, index=feature_df.index)
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype(np.float64)
+    df[bundle.target_column] = bundle.df[bundle.target_column]
+    return df, bundle.target_column
 
 
 def load_dataset_from_task(
@@ -518,9 +656,10 @@ def prepare_dataset_splits(
     val_ratio: float = 0.1,
     test_ratio: float = 0.1,
     seed: int = 42,
+    stratify: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Split dataset into train, validation, and test sets.
-    
+
     Args:
         df: Full dataset DataFrame
         target_column: Name of target column
@@ -528,36 +667,43 @@ def prepare_dataset_splits(
         val_ratio: Proportion for validation set
         test_ratio: Proportion for test set
         seed: Random seed for reproducibility
-        
+        stratify: If True, use stratified splitting by target column
+                  (recommended for classification tasks)
+
     Returns:
         Tuple of (train_df, valid_df, test_df)
     """
     logger.info(f"Splitting dataset: train={train_ratio:.1%}, val={val_ratio:.1%}, test={test_ratio:.1%}")
-    
+
     # Check ratios sum to 1
     total_ratio = train_ratio + val_ratio + test_ratio
     if abs(total_ratio - 1.0) > 1e-6:
         raise ValueError(f"Ratios must sum to 1.0, got {total_ratio}")
-    
+
+    stratify_col = df[target_column] if stratify else None
+
     # First split: train+val vs test
     test_size = test_ratio
     train_val_size = train_ratio + val_ratio
-    
+
     df_train_val, df_test = train_test_split(
         df,
         test_size=test_size,
         random_state=seed,
         shuffle=True,
+        stratify=stratify_col,
     )
-    
+
     # Second split: train vs val
     val_size_in_train_val = val_ratio / train_val_size
-    
+    stratify_train_val = df_train_val[target_column] if stratify else None
+
     df_train, df_valid = train_test_split(
         df_train_val,
         test_size=val_size_in_train_val,
         random_state=seed,
         shuffle=True,
+        stratify=stratify_train_val,
     )
     
     logger.info(f"Split completed:")

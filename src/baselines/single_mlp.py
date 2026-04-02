@@ -17,9 +17,16 @@ class SingleMLPModel(nn.Module):
         hidden_width: int,
         depth: int,
         alpha_dropout: float,
+        use_residual: bool = True,
     ) -> None:
         super().__init__()
-        self.encoder = SNNEncoder(input_dim, hidden_width, depth, alpha_dropout)
+        self.encoder = SNNEncoder(
+            input_dim,
+            hidden_width,
+            depth,
+            alpha_dropout,
+            use_residual=use_residual,
+        )
         self.reg_head = RegressionHead(self.encoder.output_dim)
     
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

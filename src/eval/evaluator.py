@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from src.eval.conformal import ConformalResults, calibrate_multiple_levels, compute_pi_metrics
-from src.eval.ensemble import ensemble_predict
+from src.eval.ensemble import ensemble_predict, ensemble_predict_quantiles
 from src.eval.metrics import EvaluationMetrics, evaluate_comprehensive
 from src.eval.r_auc_mse import error_retention_curve
 from src.models.hmtl import HMTLModel
@@ -40,6 +40,9 @@ class EvaluationResults:
     error_retention_y: np.ndarray
     # Rejection curve из референсного репозитория
     rejection_curve: np.ndarray | None = None
+    # CQR results (conformal quantile regression)
+    pi_metrics_cqr: Dict[float, Dict[str, float]] | None = None
+    pi_intervals_cqr: Dict[float, tuple[np.ndarray, np.ndarray]] | None = None
     # Для продвинутой визуализации
     y_true: np.ndarray | None = None
     y_pred: np.ndarray | None = None
@@ -61,6 +64,7 @@ def evaluate_on_dataset(
     use_normalized_metrics: bool = True,
     amp_enabled: bool = False,
     amp_dtype: str = "auto",
+    conformal_method: str = "symmetric",
 ) -> EvaluationResults:
     """Comprehensive evaluation on a dataset.
     
@@ -214,7 +218,45 @@ def evaluate_on_dataset(
             )
     else:
         logger.warning("No calibration set provided, skipping conformal calibration")
-    
+
+    # CQR evaluation (if enabled and models have quantile heads)
+    pi_metrics_cqr = None
+    pi_intervals_cqr = None
+    has_quantile_head = hasattr(models[0], 'quantile_head') and models[0].quantile_head is not None
+    if conformal_method == "cqr" and has_quantile_head and X_cal is not None and y_cal is not None:
+        from src.eval.cqr import cqr_calibrate_multiple_levels
+        logger.info("Performing CQR (Conformal Quantile Regression) calibration")
+
+        q_lo_cal, q_hi_cal = ensemble_predict_quantiles(
+            models, X_cal, device=device, amp_enabled=amp_enabled, amp_dtype=amp_dtype,
+        )
+        q_lo_test, q_hi_test = ensemble_predict_quantiles(
+            models, X, device=device, amp_enabled=amp_enabled, amp_dtype=amp_dtype,
+        )
+
+        cqr_results = cqr_calibrate_multiple_levels(
+            y_true_cal=y_cal,
+            q_lo_cal=q_lo_cal,
+            q_hi_cal=q_hi_cal,
+            q_lo_test=q_lo_test,
+            q_hi_test=q_hi_test,
+            y_true_test=y_true,
+            coverage_levels=coverage_levels,
+        )
+
+        pi_metrics_cqr = {}
+        pi_intervals_cqr = {}
+        for coverage_level, cqr_res in cqr_results.items():
+            pi_metrics_cqr[coverage_level] = compute_pi_metrics(
+                y_true, cqr_res["lower"], cqr_res["upper"]
+            )
+            pi_intervals_cqr[coverage_level] = (cqr_res["lower"], cqr_res["upper"])
+            logger.info(
+                f"CQR Coverage {coverage_level:.0%} - "
+                f"Actual: {pi_metrics_cqr[coverage_level]['coverage']:.4%}, "
+                f"Width: {pi_metrics_cqr[coverage_level]['mean_width']:.6f}"
+            )
+
     return EvaluationResults(
         metrics=metrics,
         conformal_results=conformal_results,
@@ -222,6 +264,8 @@ def evaluate_on_dataset(
         pi_metrics_after=pi_metrics_after,
         pi_intervals_before=pi_intervals_before,
         pi_intervals_after=pi_intervals_after,
+        pi_metrics_cqr=pi_metrics_cqr,
+        pi_intervals_cqr=pi_intervals_cqr,
         error_retention_x=error_retention_x,
         error_retention_y=error_retention_y,
         rejection_curve=rejection_curve,

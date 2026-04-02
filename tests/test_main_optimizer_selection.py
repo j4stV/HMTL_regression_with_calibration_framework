@@ -96,6 +96,10 @@ optimizer:
   lookahead_sync_period: 6
   lookahead_slow_step: 0.5
   weight_decay: 0.0
+  grad_clip_norm: 0.75
+  scheduler:
+    name: cosine
+    eta_min_ratio: 0.1
 training:
   seed: 1
   epochs: 2
@@ -176,6 +180,9 @@ ensemble:
 
     train_cfg = captured["train_cfg"]
     assert train_cfg.optimizer == "adamw"
+    assert train_cfg.grad_clip_norm == 0.75
+    assert train_cfg.lr_scheduler_name == "cosine"
+    assert train_cfg.lr_scheduler_eta_min_ratio == 0.1
 
 
 def test_run_experiment_regression_keeps_radam_lookahead(tmp_path, monkeypatch) -> None:

@@ -26,12 +26,19 @@ class FlatMTLModel(nn.Module):
         n_bins: int,
         aux_weight: float,
         enable_aux: bool = True,
+        use_residual: bool = True,
     ) -> None:
         super().__init__()
         self.enable_aux = enable_aux
         self.aux_weight = aux_weight
         
-        self.encoder = SNNEncoder(input_dim, hidden_width, depth, alpha_dropout)
+        self.encoder = SNNEncoder(
+            input_dim,
+            hidden_width,
+            depth,
+            alpha_dropout,
+            use_residual=use_residual,
+        )
         self.reg_head = RegressionHead(self.encoder.output_dim)
         self.aux_head = AuxBinsHead(self.encoder.output_dim, n_bins) if enable_aux else None
     

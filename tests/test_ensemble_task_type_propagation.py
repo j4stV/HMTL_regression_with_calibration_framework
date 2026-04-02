@@ -20,6 +20,8 @@ def test_fit_ensemble_propagates_task_type(monkeypatch):
     captured_sigma_weights: list[float] = []
     captured_early_stop_metrics: list[str] = []
     captured_hybrid_weights: list[float] = []
+    captured_grad_clip: list[float | None] = []
+    captured_schedulers: list[str] = []
 
     def fake_train_model(
         model,
@@ -38,6 +40,8 @@ def test_fit_ensemble_propagates_task_type(monkeypatch):
         captured_sigma_weights.append(cfg.sigma_reg_weight)
         captured_early_stop_metrics.append(cfg.early_stop_metric)
         captured_hybrid_weights.append(cfg.hybrid_r_auc_weight)
+        captured_grad_clip.append(cfg.grad_clip_norm)
+        captured_schedulers.append(cfg.lr_scheduler_name)
         return 0.123
 
     # fit_ensemble imports train_model from src.train.loop inside the function body.
@@ -55,6 +59,8 @@ def test_fit_ensemble_propagates_task_type(monkeypatch):
         sigma_reg_weight=0.777,
         early_stop_metric="rmse",
         hybrid_r_auc_weight=0.33,
+        grad_clip_norm=0.75,
+        lr_scheduler_name="cosine",
         seed=123,
     )
 
@@ -75,6 +81,8 @@ def test_fit_ensemble_propagates_task_type(monkeypatch):
     assert captured_sigma_weights == [0.777, 0.777]
     assert captured_early_stop_metrics == ["rmse", "rmse"]
     assert captured_hybrid_weights == [0.33, 0.33]
+    assert captured_grad_clip == [0.75, 0.75]
+    assert captured_schedulers == ["cosine", "cosine"]
 
 
 def test_fit_ensemble_stratified_kfold_cycles_when_requested_splits_too_high(monkeypatch):

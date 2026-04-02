@@ -167,6 +167,13 @@ def fit_ensemble(
                 amp_eval_enabled=train_cfg.amp_eval_enabled,
                 early_stop_metric=train_cfg.early_stop_metric,
                 hybrid_r_auc_weight=train_cfg.hybrid_r_auc_weight,
+                grad_clip_norm=train_cfg.grad_clip_norm,
+                lr_scheduler_name=train_cfg.lr_scheduler_name,
+                lr_scheduler_eta_min_ratio=train_cfg.lr_scheduler_eta_min_ratio,
+                cqr_enabled=train_cfg.cqr_enabled,
+                cqr_quantiles=train_cfg.cqr_quantiles,
+                cqr_weight=train_cfg.cqr_weight,
+                adversarial=train_cfg.adversarial,
             )
             
             # Sample indices based on bagging strategy

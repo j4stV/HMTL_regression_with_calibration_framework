@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from src.baselines.catboost_baseline import CatBoostBaseline
+from src.baselines.catboost_baseline import CatBoostBaseline, CatBoostClassificationBaseline
 from src.baselines.flat_mtl import FlatMTLModel
 from src.baselines.single_mlp import SingleMLPModel
 from src.models.hmtl import HMTLModel
@@ -27,6 +27,7 @@ def train_single_mlp_baseline(
     hidden_width: int = 512,
     depth: int = 12,
     alpha_dropout: float = 0.0003,
+    use_residual: bool = True,
     train_cfg: TrainConfig | None = None,
 ) -> SingleMLPModel:
     """Train single MLP baseline."""
@@ -40,6 +41,7 @@ def train_single_mlp_baseline(
         hidden_width=hidden_width,
         depth=depth,
         alpha_dropout=alpha_dropout,
+        use_residual=use_residual,
     )
     
     # Use dummy bins for compatibility with train_model
@@ -61,6 +63,7 @@ def train_flat_mtl_baseline(
     alpha_dropout: float = 0.0003,
     n_bins: int = 5,
     aux_weight: float = 0.3,
+    use_residual: bool = True,
     train_cfg: TrainConfig | None = None,
 ) -> FlatMTLModel:
     """Train flat MTL baseline."""
@@ -77,6 +80,7 @@ def train_flat_mtl_baseline(
         n_bins=n_bins,
         aux_weight=aux_weight,
         enable_aux=True,
+        use_residual=use_residual,
     )
     
     score = train_model(model, X_tr, y_tr, X_va, y_va, n_bins=n_bins, cfg=train_cfg)
@@ -97,6 +101,7 @@ def train_hmtl_baseline(
     alpha_dropout: float = 0.0003,
     n_bins: int = 5,
     aux_weight: float = 0.3,
+    use_residual: bool = True,
     n_models: int = 10,
     train_cfg: TrainConfig | None = None,
     ensemble_cfg: EnsembleConfig | None = None,
@@ -122,6 +127,16 @@ def train_hmtl_baseline(
             weight_decay=train_cfg.weight_decay,
             sigma_reg_weight=train_cfg.sigma_reg_weight,
             seed=train_cfg.seed,
+            task_type=train_cfg.task_type,
+            show_progress=train_cfg.show_progress,
+            amp_enabled=train_cfg.amp_enabled,
+            amp_dtype=train_cfg.amp_dtype,
+            amp_eval_enabled=train_cfg.amp_eval_enabled,
+            early_stop_metric=train_cfg.early_stop_metric,
+            hybrid_r_auc_weight=train_cfg.hybrid_r_auc_weight,
+            grad_clip_norm=train_cfg.grad_clip_norm,
+            lr_scheduler_name=train_cfg.lr_scheduler_name,
+            lr_scheduler_eta_min_ratio=train_cfg.lr_scheduler_eta_min_ratio,
         )
     
     if ensemble_cfg is None:
@@ -138,6 +153,7 @@ def train_hmtl_baseline(
             aux_weight=aux_weight,
             enable_aux=True,
             aux_task="bins",
+            use_residual=use_residual,
         )
     
     models, avg_score = fit_ensemble(
@@ -183,7 +199,41 @@ def train_catboost_baseline(
     )
     
     baseline.fit(X_tr, y_tr, X_val=X_va, y_val=y_va)
-    
+
     logger.info("CatBoost baseline trained")
+    return baseline
+
+
+def train_catboost_classification_baseline(
+    X_tr: np.ndarray,
+    y_tr: np.ndarray,
+    X_va: np.ndarray | None = None,
+    y_va: np.ndarray | None = None,
+    n_models: int = 10,
+    iterations: int = 1000,
+    learning_rate: float = 0.1,
+    depth: int = 6,
+    random_seed: int = 42,
+    num_classes: int = 2,
+    compute_device: str = "auto",
+    gpu_devices: str | None = None,
+) -> CatBoostClassificationBaseline:
+    """Train CatBoost classification baseline."""
+    logger = get_logger("baselines.trainer")
+
+    baseline = CatBoostClassificationBaseline(
+        n_models=n_models,
+        iterations=iterations,
+        learning_rate=learning_rate,
+        depth=depth,
+        random_seed=random_seed,
+        num_classes=num_classes,
+        compute_device=compute_device,
+        gpu_devices=gpu_devices,
+    )
+
+    baseline.fit(X_tr, y_tr, X_val=X_va, y_val=y_va)
+
+    logger.info("CatBoost classification baseline trained")
     return baseline
 

@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from src.data.preprocess import PreprocessConfig, TabularPreprocessor
 from src.models.hmtl import HMTLModel
 from src.train.loop import TrainConfig, train_model
+from src.train.adversarial import AdversarialConfig
 from src.train.ensemble import EnsembleConfig, fit_ensemble
 from src.eval.evaluator import evaluate_on_dataset, evaluate_classification_on_dataset
 from src.eval.visualization import (
@@ -146,6 +147,9 @@ def run_experiment(
         pca_enabled=bool(data_cfg["preprocess"]["pca"]["enabled"]),
         pca_n_components=data_cfg["preprocess"]["pca"]["n_components"],
         target_standardize=bool(data_cfg["preprocess"]["target_standardize"]),
+        target_encoding_enabled=bool(data_cfg["preprocess"].get("target_encoding_enabled", False)),
+        target_encoding_n_splits=int(data_cfg["preprocess"].get("target_encoding_n_splits", 5)),
+        target_encoding_smoothing=float(data_cfg["preprocess"].get("target_encoding_smoothing", 20.0)),
     )
 
     logger.info("Fitting preprocessor on training data...")
@@ -178,7 +182,8 @@ def run_experiment(
     
     configured_n_bins = int(model_cfg["hmtl"]["n_bins"])
     resolved_n_bins = configured_n_bins
-    resolved_aux_task = str(model_cfg["hmtl"].get("aux_task", "contrastive"))
+    raw_aux_task = str(model_cfg["hmtl"].get("aux_task", "contrastive"))
+    resolved_aux_task = raw_aux_task
     if task_type == "classification" and resolved_aux_task == "bins":
         min_required_bins = int(task_config.num_classes)
         if resolved_n_bins < min_required_bins:
@@ -190,9 +195,14 @@ def run_experiment(
             )
             resolved_n_bins = min_required_bins
 
+    # Multi-aux settings
+    multi_aux_tasks = model_cfg["hmtl"].get("multi_aux_tasks", None)
+    multi_aux_weights = model_cfg["hmtl"].get("multi_aux_weights", None)
+
     def build_model() -> HMTLModel:
         # Create task-specific head
         hidden_width = int(model_cfg["encoder"]["hidden_width"])
+        use_residual = bool(model_cfg["encoder"].get("residual", True))
 
         if task_type == "classification":
             # Classification head
@@ -204,6 +214,12 @@ def run_experiment(
         # Get scale_coeff for regression (ignored for classification)
         scale_coeff = pre.target_std_ if pre.target_std_ is not None and pre.target_std_ > 1e-12 else 1.0
 
+        # Create quantile head for CQR if enabled
+        q_head = None
+        if cqr_enabled and task_type == "regression":
+            from src.models.quantile_head import QuantileHead
+            q_head = QuantileHead(hidden_width, quantiles=cqr_quantiles)
+
         return HMTLModel(
             input_dim=input_dim,
             hidden_width=hidden_width,
@@ -213,16 +229,21 @@ def run_experiment(
             n_bins=resolved_n_bins,
             aux_weight=float(model_cfg["hmtl"]["lambda_aux"]),
             enable_aux=bool(model_cfg["hmtl"]["enabled"]),
-            aux_task=resolved_aux_task,  # Default to contrastive
-            proj_dim=int(model_cfg["hmtl"].get("proj_dim", 50)),  # Default 50
+            aux_task=resolved_aux_task,
+            proj_dim=int(model_cfg["hmtl"].get("proj_dim", 50)),
             scale_coeff=scale_coeff,
-            task_head=task_head,  # NEW: inject task head
+            task_head=task_head,
+            use_residual=use_residual,
+            quantile_head=q_head,
+            multi_aux_tasks=multi_aux_tasks,
+            multi_aux_weights=multi_aux_weights,
         )
     
     logger.info("Model architecture:")
     logger.info(f"  Hidden width: {model_cfg['encoder']['hidden_width']}")
     logger.info(f"  Depth (low/high): {model_cfg['hmtl']['low_layer']}/{model_cfg['hmtl']['high_layer']}")
     logger.info(f"  Alpha dropout: {model_cfg['encoder']['alpha_dropout']}")
+    logger.info(f"  Residual encoder: {bool(model_cfg['encoder'].get('residual', True))}")
     logger.info(f"  N bins: {resolved_n_bins} (configured: {configured_n_bins})")
     logger.info(f"  Auxiliary weight: {model_cfg['hmtl']['lambda_aux']}")
     logger.info(f"  Auxiliary enabled: {model_cfg['hmtl']['enabled']}")
@@ -235,7 +256,10 @@ def run_experiment(
         task_loss = None  # Will use default gaussian_nll
         task_metrics = None
 
-    requested_optimizer = str(train_cfg["optimizer"].get("name", "radam_lookahead"))
+    optimizer_cfg = train_cfg["optimizer"]
+    scheduler_cfg = optimizer_cfg.get("scheduler", {})
+    grad_clip_raw = optimizer_cfg.get("grad_clip_norm", 1.0)
+    requested_optimizer = str(optimizer_cfg.get("name", "radam_lookahead"))
     effective_optimizer = requested_optimizer
     if task_type == "classification" and requested_optimizer == "radam_lookahead":
         effective_optimizer = "adamw"
@@ -246,23 +270,53 @@ def run_experiment(
             effective_optimizer,
         )
 
+    # Parse adversarial config
+    adv_raw = train_cfg.get("training", {}).get("adversarial", {})
+    adv_config = AdversarialConfig(
+        enabled=bool(adv_raw.get("enabled", False)),
+        method=str(adv_raw.get("method", "fgsm")),
+        epsilon=float(adv_raw.get("epsilon", 0.01)),
+        alpha=float(adv_raw.get("alpha", 0.005)),
+        pgd_steps=int(adv_raw.get("pgd_steps", 3)),
+        adv_weight=float(adv_raw.get("adv_weight", 0.5)),
+    )
+    if adv_config.enabled:
+        logger.info(f"Adversarial augmentations enabled: method={adv_config.method}, "
+                     f"epsilon={adv_config.epsilon}, adv_weight={adv_config.adv_weight}")
+
+    # Parse conformal/CQR config
+    conformal_cfg = train_cfg.get("conformal", {})
+    conformal_method = str(conformal_cfg.get("method", "symmetric"))
+    cqr_enabled = conformal_method == "cqr"
+    cqr_quantiles = conformal_cfg.get("quantiles", [0.05, 0.95]) if cqr_enabled else None
+    cqr_weight = float(conformal_cfg.get("cqr_weight", 0.5))
+    if cqr_enabled:
+        logger.info(f"CQR enabled: quantiles={cqr_quantiles}, weight={cqr_weight}")
+
     amp_cfg = train_cfg.get("training", {}).get("amp", {})
     train_conf = TrainConfig(
-        lr=float(train_cfg["optimizer"]["lr"]),
+        lr=float(optimizer_cfg["lr"]),
         epochs=int(train_cfg["training"]["epochs"]),
         batch_size=int(train_cfg["training"]["batch_size"]),
         patience=int(train_cfg["training"]["early_stop"]["patience"]) if train_cfg["training"].get("early_stop") else 10,
         aux_weight=float(model_cfg["hmtl"]["lambda_aux"]),
         optimizer=effective_optimizer,
-        lookahead_k=int(train_cfg["optimizer"].get("lookahead_sync_period", 6)),
-        lookahead_alpha=float(train_cfg["optimizer"].get("lookahead_slow_step", 0.5)),
-        weight_decay=float(train_cfg["optimizer"].get("weight_decay", 0.0)),
+        lookahead_k=int(optimizer_cfg.get("lookahead_sync_period", 6)),
+        lookahead_alpha=float(optimizer_cfg.get("lookahead_slow_step", 0.5)),
+        weight_decay=float(optimizer_cfg.get("weight_decay", 0.0)),
         sigma_reg_weight=float(train_cfg["training"].get("sigma_reg_weight", 0.01)),
         seed=int(train_cfg["training"].get("seed")) if train_cfg["training"].get("seed") else None,
         task_type=task_type,  # NEW
         amp_enabled=bool(amp_cfg.get("enabled", True)),
         amp_dtype=str(amp_cfg.get("dtype", "auto")),
         amp_eval_enabled=bool(amp_cfg.get("eval_enabled", True)),
+        grad_clip_norm=None if grad_clip_raw is None else float(grad_clip_raw),
+        lr_scheduler_name=str(scheduler_cfg.get("name", "none")),
+        lr_scheduler_eta_min_ratio=float(scheduler_cfg.get("eta_min_ratio", 0.05)),
+        cqr_enabled=cqr_enabled,
+        cqr_quantiles=cqr_quantiles,
+        cqr_weight=cqr_weight,
+        adversarial=adv_config,
     )
 
     logger.info("Loading ensemble configuration...")
@@ -272,6 +326,45 @@ def run_experiment(
         bagging=str(ensemble_cfg["ensemble"]["bagging"]),
     )
     logger.info(f"Ensemble: {ens_conf.n_models} models, bagging={ens_conf.bagging}")
+
+    # Auto auxiliary task selection
+    if raw_aux_task == "auto":
+        from src.train.aux_selector import select_best_aux_task
+        auto_candidates = model_cfg["hmtl"].get("auto_candidates", ["bins", "contrastive", "reconstruction", "rank"])
+        auto_pilot_epochs = int(model_cfg["hmtl"].get("auto_pilot_epochs", 30))
+
+        def _build_model_for_selection(aux_task: str) -> HMTLModel:
+            hidden_width = int(model_cfg["encoder"]["hidden_width"])
+            use_residual = bool(model_cfg["encoder"].get("residual", True))
+            task_head_sel = None
+            if task_type == "classification":
+                task_head_sel = ClassificationTask.create_task_head(task_config, in_dim=hidden_width)
+            scale_coeff = pre.target_std_ if pre.target_std_ is not None and pre.target_std_ > 1e-12 else 1.0
+            return HMTLModel(
+                input_dim=input_dim,
+                hidden_width=hidden_width,
+                depth_low=int(model_cfg["hmtl"]["low_layer"]),
+                depth_high=int(model_cfg["hmtl"]["high_layer"]),
+                alpha_dropout=float(model_cfg["encoder"]["alpha_dropout"]),
+                n_bins=resolved_n_bins,
+                aux_weight=float(model_cfg["hmtl"]["lambda_aux"]),
+                enable_aux=True,
+                aux_task=aux_task,
+                proj_dim=int(model_cfg["hmtl"].get("proj_dim", 50)),
+                scale_coeff=scale_coeff,
+                task_head=task_head_sel,
+                use_residual=use_residual,
+            )
+
+        resolved_aux_task = select_best_aux_task(
+            build_model_fn=_build_model_for_selection,
+            X_tr=X_tr, y_tr=y_tr, X_va=X_va, y_va=y_va,
+            n_bins=resolved_n_bins,
+            train_cfg=train_conf,
+            candidates=auto_candidates,
+            pilot_epochs=auto_pilot_epochs,
+        )
+        logger.info(f"Auto-selected auxiliary task: {resolved_aux_task}")
 
     logger.info("Starting ensemble training...")
     models, avg_score = fit_ensemble(
@@ -335,6 +428,7 @@ def run_experiment(
                 use_normalized_metrics=True,
                 amp_enabled=train_conf.amp_eval_enabled,
                 amp_dtype=train_conf.amp_dtype,
+                conformal_method=conformal_method,
             )
 
             logger.info("Validation Metrics:")
@@ -398,9 +492,10 @@ def run_experiment(
                     y_cal=y_cal,
                     coverage_levels=[0.80, 0.90, 0.95],
                     preprocessor=pre,
-                    use_normalized_metrics=True,  # Compute metrics in standardized space (like baselines)
+                    use_normalized_metrics=True,
                     amp_enabled=train_conf.amp_eval_enabled,
                     amp_dtype=train_conf.amp_dtype,
+                    conformal_method=conformal_method,
                 )
 
                 logger.info("Test Metrics:")
@@ -541,6 +636,20 @@ def run_experiment(
                 if test_results is not None and coverage_level in test_results.pi_metrics_after:
                     final_metrics[f"test_coverage@{int(coverage_level*100)}"] = test_results.pi_metrics_after[coverage_level]['coverage']
                     final_metrics[f"test_width@{int(coverage_level*100)}"] = test_results.pi_metrics_after[coverage_level]['mean_width']
+
+        # CQR metrics
+        val_cqr = getattr(val_results, 'pi_metrics_cqr', None)
+        if val_cqr is not None:
+            for coverage_level in [0.80, 0.90, 0.95]:
+                if coverage_level in val_cqr:
+                    final_metrics[f"val_cqr_coverage@{int(coverage_level*100)}"] = val_cqr[coverage_level]['coverage']
+                    final_metrics[f"val_cqr_width@{int(coverage_level*100)}"] = val_cqr[coverage_level]['mean_width']
+        test_cqr = getattr(test_results, 'pi_metrics_cqr', None) if test_results is not None else None
+        if test_cqr is not None:
+            for coverage_level in [0.80, 0.90, 0.95]:
+                if coverage_level in test_cqr:
+                    final_metrics[f"test_cqr_coverage@{int(coverage_level*100)}"] = test_cqr[coverage_level]['coverage']
+                    final_metrics[f"test_cqr_width@{int(coverage_level*100)}"] = test_cqr[coverage_level]['mean_width']
     
     log_metrics(final_metrics, logger, "Final Metrics")
     

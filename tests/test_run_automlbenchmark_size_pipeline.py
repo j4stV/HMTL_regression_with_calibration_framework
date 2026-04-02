@@ -11,6 +11,7 @@ import pytest
 
 import scripts.run_automlbenchmark_experiment as size_script
 from scripts.run_automlbenchmark_experiment import DatasetMeta
+from src.data.openml_loader import LoadedDatasetBundle
 from src.data.preprocess import PreprocessConfig
 
 
@@ -47,6 +48,7 @@ def test_prepare_preprocessed_splits_for_size_refits_preprocessor():
         df_valid=df_valid,
         df_test=df_test,
         target_column="target",
+        categorical_columns=None,
         preprocess_config=cfg,
         size_ratio=0.5,
         seed=1,
@@ -56,6 +58,7 @@ def test_prepare_preprocessed_splits_for_size_refits_preprocessor():
         df_valid=df_valid,
         df_test=df_test,
         target_column="target",
+        categorical_columns=None,
         preprocess_config=cfg,
         size_ratio=1.0,
         seed=1,
@@ -144,15 +147,67 @@ def test_build_effective_size_configs_balanced_policy():
     assert large["ensemble_cfg_yaml"]["ensemble"]["bagging"] == "stratified_kfold"
     assert large["model_cfg"]["hmtl"]["enabled"] is True
     assert large["model_cfg"]["hmtl"]["aux_task"] == "bins"
+    assert large["model_cfg"]["encoder"]["hidden_width"] == 128
+    assert large["model_cfg"]["hmtl"]["high_layer"] == 16
+    assert large["model_cfg"]["hmtl"]["low_layer"] == 10
+    assert large["model_cfg"]["hmtl"]["lambda_aux"] == 0.35
     assert large["preprocess_config"].pca_enabled is True
     assert large["preprocess_config"].pca_n_components == 0.99
+
+    large_low_feature = size_script._build_effective_size_configs(
+        base_model_cfg=base_model_cfg,
+        base_train_cfg_yaml=base_train_cfg,
+        base_ensemble_cfg_yaml=base_ensemble_cfg,
+        base_preprocess_config=base_preprocess,
+        size_ratio=1.0,
+        n_train_size=5000,
+        n_features=8,
+    )
+    assert large_low_feature["model_cfg"]["encoder"]["hidden_width"] == 64
+    assert large_low_feature["model_cfg"]["hmtl"]["high_layer"] == 8
+    assert large_low_feature["model_cfg"]["hmtl"]["low_layer"] == 3
+    assert large_low_feature["model_cfg"]["hmtl"]["aux_task"] == "bins"
+    assert large_low_feature["model_cfg"]["hmtl"]["lambda_aux"] == 0.25
+
+    large_mid_low_feature = size_script._build_effective_size_configs(
+        base_model_cfg=base_model_cfg,
+        base_train_cfg_yaml=base_train_cfg,
+        base_ensemble_cfg_yaml=base_ensemble_cfg,
+        base_preprocess_config=base_preprocess,
+        size_ratio=1.0,
+        n_train_size=5000,
+        n_features=12,
+    )
+    assert large_mid_low_feature["model_cfg"]["encoder"]["hidden_width"] == 96
+    assert large_mid_low_feature["model_cfg"]["hmtl"]["high_layer"] == 10
+    assert large_mid_low_feature["model_cfg"]["hmtl"]["low_layer"] == 4
+    assert large_mid_low_feature["model_cfg"]["hmtl"]["lambda_aux"] == 0.3
+
+    large_high_dim = size_script._build_effective_size_configs(
+        base_model_cfg=base_model_cfg,
+        base_train_cfg_yaml=base_train_cfg,
+        base_ensemble_cfg_yaml=base_ensemble_cfg,
+        base_preprocess_config=base_preprocess,
+        size_ratio=1.0,
+        n_train_size=5000,
+        n_features=300,
+    )
+    assert large_high_dim["model_cfg"]["encoder"]["hidden_width"] == 128
+    assert large_high_dim["model_cfg"]["hmtl"]["high_layer"] == 18
+    assert large_high_dim["model_cfg"]["hmtl"]["low_layer"] == 12
+    assert large_high_dim["model_cfg"]["hmtl"]["aux_task"] == "contrastive"
+    assert large_high_dim["model_cfg"]["hmtl"]["lambda_aux"] == 0.5
 
 
 def test_run_single_dataset_experiment_smoke_with_two_baselines(monkeypatch, tmp_path: Path):
     df = _make_df(30)
 
-    def fake_load_dataset(dataset_id: int):
-        return df.copy(), "target"
+    def fake_load_dataset_bundle(dataset_id: int):
+        return LoadedDatasetBundle(
+            df=df.copy(),
+            target_column="target",
+            categorical_columns=[],
+        )
 
     def fake_run_size_seed_trial(
         *,
@@ -162,13 +217,16 @@ def test_run_single_dataset_experiment_smoke_with_two_baselines(monkeypatch, tmp
         df_valid,
         df_test,
         target_column,
+        categorical_columns,
         preprocess_config,
         model_cfg,
         train_cfg_yaml,
         ensemble_cfg_yaml,
         baselines,
+        skip_hmtl=False,
         show_inner_progress=True,
     ):
+        del skip_hmtl
         hmtl_rmse = 1.0 - 0.1 * size_ratio + 0.01 * seed
         hmtl_rauc = 0.20 - 0.02 * size_ratio + 0.005 * seed
 
@@ -208,7 +266,7 @@ def test_run_single_dataset_experiment_smoke_with_two_baselines(monkeypatch, tmp
 
         return result
 
-    monkeypatch.setattr(size_script, "load_dataset", fake_load_dataset)
+    monkeypatch.setattr(size_script, "load_dataset_bundle", fake_load_dataset_bundle)
     monkeypatch.setattr(size_script, "run_size_seed_trial", fake_run_size_seed_trial)
 
     model_cfg = {
@@ -316,9 +374,11 @@ def test_run_automlbenchmark_experiments_high_level_progress_only(monkeypatch, t
         output_dir,
         study_id,
         config_paths,
+        skip_hmtl=False,
         show_trial_progress=False,
         show_inner_progress=True,
     ):
+        del skip_hmtl
         captured["show_trial_progress"] = bool(show_trial_progress)
         captured["show_inner_progress"] = bool(show_inner_progress)
         return {"dataset_id": int(dataset_meta.dataset_id), "sizes": {}}
@@ -420,9 +480,11 @@ def test_run_automlbenchmark_experiments_accepts_explicit_dataset_ids(monkeypatc
         output_dir,
         study_id,
         config_paths,
+        skip_hmtl=False,
         show_trial_progress=False,
         show_inner_progress=True,
     ):
+        del skip_hmtl
         return {"dataset_id": int(dataset_meta.dataset_id), "dataset_name": dataset_meta.dataset_name, "sizes": {}}
 
     monkeypatch.setattr(size_script, "run_single_dataset_experiment", fake_run_single_dataset_experiment)
@@ -529,9 +591,11 @@ def test_run_automlbenchmark_experiments_parallel_branch_and_ordering(monkeypatc
         output_dir,
         study_id,
         config_paths,
+        skip_hmtl=False,
         show_trial_progress=False,
         show_inner_progress=True,
     ):
+        del skip_hmtl
         cast_flags = captured["called_flags"]
         assert isinstance(cast_flags, list)
         cast_flags.append(
@@ -668,9 +732,11 @@ def test_run_automlbenchmark_experiments_parallel_future_failure(monkeypatch, tm
         output_dir,
         study_id,
         config_paths,
+        skip_hmtl=False,
         show_trial_progress=False,
         show_inner_progress=True,
     ):
+        del skip_hmtl
         return {"dataset_id": int(dataset_meta.dataset_id), "dataset_name": dataset_meta.dataset_name, "sizes": {}}
 
     monkeypatch.setattr(size_script, "run_single_dataset_experiment", fake_run_single_dataset_experiment)
@@ -914,6 +980,7 @@ def test_run_size_seed_trial_retries_hmtl_with_fp16_on_bfloat16_error(monkeypatc
         df_valid=pd.DataFrame(),
         df_test=pd.DataFrame(),
         target_column="target",
+        categorical_columns=None,
         preprocess_config=PreprocessConfig(pca_enabled=False),
         model_cfg={
             "encoder": {"hidden_width": 16, "alpha_dropout": 0.0},
@@ -997,6 +1064,7 @@ def test_run_size_seed_trial_retries_hmtl_with_amp_disabled_after_fp16_bfloat16_
         df_valid=pd.DataFrame(),
         df_test=pd.DataFrame(),
         target_column="target",
+        categorical_columns=None,
         preprocess_config=PreprocessConfig(pca_enabled=False),
         model_cfg={
             "encoder": {"hidden_width": 16, "alpha_dropout": 0.0},

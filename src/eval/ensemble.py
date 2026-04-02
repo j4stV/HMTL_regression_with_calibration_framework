@@ -184,6 +184,7 @@ def ensemble_predict(
         X_tensor = torch.tensor(X, dtype=torch.float32, device=device)
         
         for i, model in enumerate(models):
+            model.to(device)
             model.eval()
             with _autocast_if_needed(enabled=amp_state.enabled, dtype=amp_state.dtype):
                 output = model(X_tensor)
@@ -234,6 +235,61 @@ def ensemble_predict(
     )
     
     return mu_mean, sigma_total, sigma_epistemic, sigma_aleatoric
+
+
+def ensemble_predict_quantiles(
+    models: List[HMTLModel],
+    X: np.ndarray,
+    device: torch.device | None = None,
+    amp_enabled: bool = False,
+    amp_dtype: str = "auto",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Predict quantiles using ensemble for CQR.
+
+    Averages quantile predictions across ensemble models.
+
+    Args:
+        models: List of trained models with quantile_head.
+        X: Input features (n_samples, n_features).
+        device: Device to run predictions on.
+        amp_enabled: Enable AMP for inference.
+        amp_dtype: AMP dtype policy.
+
+    Returns:
+        q_lo_mean: Mean lower quantile predictions (n_samples,).
+        q_hi_mean: Mean upper quantile predictions (n_samples,).
+    """
+    logger = get_logger("eval.ensemble")
+
+    if device is None:
+        device = _select_default_device()
+
+    amp_state = _resolve_inference_amp_mode(device, amp_enabled, amp_dtype)
+
+    q_lo_list = []
+    q_hi_list = []
+
+    with torch.no_grad():
+        X_tensor = torch.tensor(X, dtype=torch.float32, device=device)
+
+        for model in models:
+            model.to(device)
+            model.eval()
+            with _autocast_if_needed(enabled=amp_state.enabled, dtype=amp_state.dtype):
+                q_preds = model.predict_quantiles(X_tensor)
+            q_np = _to_numpy_compatible(q_preds.float())
+            q_lo_list.append(q_np[:, 0])
+            q_hi_list.append(q_np[:, -1])
+
+    q_lo_mean = np.mean(np.stack(q_lo_list, axis=0), axis=0)
+    q_hi_mean = np.mean(np.stack(q_hi_list, axis=0), axis=0)
+
+    logger.info(
+        f"CQR ensemble quantiles - "
+        f"q_lo: mean={np.mean(q_lo_mean):.6f}, q_hi: mean={np.mean(q_hi_mean):.6f}"
+    )
+
+    return q_lo_mean, q_hi_mean
 
 
 def ensemble_predict_mean(
@@ -344,6 +400,7 @@ def ensemble_predict_classification(
         X_tensor = torch.tensor(X, dtype=torch.float32, device=device)
 
         for model in models:
+            model.to(device)
             model.eval()
             with _autocast_if_needed(enabled=amp_state.enabled, dtype=amp_state.dtype):
                 output = model(X_tensor)
