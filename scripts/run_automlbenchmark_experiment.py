@@ -60,6 +60,9 @@ from src.eval.ensemble import ensemble_predict
 from src.eval.evaluator import evaluate_on_dataset
 from src.eval.metrics import EvaluationMetrics, evaluate_comprehensive
 from src.models.hmtl import HMTLModel
+from src.models.quantile_head import QuantileHead
+from src.train.adversarial import AdversarialConfig
+from src.train.aux_selector import select_best_aux_task
 from src.train.ensemble import EnsembleConfig, fit_ensemble
 from src.train.loop import TrainConfig
 
@@ -347,6 +350,47 @@ def _build_effective_size_configs(
 
     preprocess_config.pca_n_components = pca_n_components
 
+    # --- Adaptive adversarial augmentation policy ---
+    adv_cfg = training_cfg.setdefault("adversarial", {})
+    if regime == "tiny":
+        # Too few samples — overhead not worth it
+        adv_cfg["enabled"] = False
+        adv_policy = "disabled_for_tiny"
+    elif regime == "small":
+        adv_cfg["enabled"] = True
+        adv_cfg["method"] = "fgsm"
+        adv_cfg["epsilon"] = 0.005
+        adv_cfg["adv_weight"] = 0.3
+        adv_policy = "fgsm_conservative"
+    else:
+        adv_cfg["enabled"] = True
+        adv_cfg["method"] = "fgsm"
+        adv_cfg["epsilon"] = 0.01
+        adv_cfg["adv_weight"] = 0.5
+        adv_policy = "fgsm_standard"
+
+    # --- Adaptive CQR policy ---
+    conformal_cfg = train_cfg_yaml.setdefault("conformal", {})
+    if regime == "tiny":
+        # Not enough calibration data
+        conformal_cfg["method"] = "symmetric"
+        cqr_policy = "disabled_for_tiny"
+    else:
+        conformal_cfg["method"] = "cqr"
+        conformal_cfg["quantiles"] = [0.05, 0.95]
+        conformal_cfg["cqr_weight"] = 0.5
+        cqr_policy = "cqr_enabled"
+
+    # --- Adaptive auto aux task policy ---
+    if regime == "large":
+        hmtl_cfg["aux_task"] = "auto"
+        hmtl_cfg["auto_candidates"] = ["bins", "contrastive", "reconstruction", "rank"]
+        hmtl_cfg["auto_pilot_epochs"] = 30
+        auto_aux_policy = "auto_selection"
+    else:
+        # tiny/small: keep hardcoded bins (cheap, stable)
+        auto_aux_policy = "hardcoded"
+
     effective_config = {
         "train": {
             "batch_size": int(training_cfg["batch_size"]),
@@ -354,6 +398,17 @@ def _build_effective_size_configs(
                 "metric": str(early_stop_cfg["metric"]),
                 "hybrid_r_auc_weight": float(early_stop_cfg["hybrid_r_auc_weight"]),
                 "patience": int(early_stop_cfg.get("patience", 10)),
+            },
+            "adversarial": {
+                "enabled": bool(adv_cfg.get("enabled", False)),
+                "method": str(adv_cfg.get("method", "fgsm")),
+                "epsilon": float(adv_cfg.get("epsilon", 0.01)),
+                "adv_weight": float(adv_cfg.get("adv_weight", 0.5)),
+            },
+            "cqr": {
+                "method": str(conformal_cfg.get("method", "symmetric")),
+                "quantiles": conformal_cfg.get("quantiles"),
+                "cqr_weight": float(conformal_cfg.get("cqr_weight", 0.5)),
             },
         },
         "ensemble": {
@@ -384,6 +439,9 @@ def _build_effective_size_configs(
             f"min(base_batch, max(16, floor(n_train_size/{batch_divisor})))"
         ),
         "pca_policy": pca_policy,
+        "adversarial_policy": adv_policy,
+        "cqr_policy": cqr_policy,
+        "auto_aux_policy": auto_aux_policy,
     }
 
     return {
@@ -468,7 +526,17 @@ def _aggregate_metric_dicts(metric_dicts: list[dict[str, float]]) -> dict[str, d
     aggregated: dict[str, dict[str, float]] = {}
 
     for metric_name in metric_names:
-        values = [d[metric_name] for d in metric_dicts if metric_name in d and np.isfinite(d[metric_name])]
+        values = []
+        for d in metric_dicts:
+            if metric_name not in d:
+                continue
+            v = d[metric_name]
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(v):
+                values.append(v)
         if not values:
             continue
         arr = np.asarray(values, dtype=float)
@@ -559,11 +627,19 @@ def _build_hmtl_model_builder(
     input_dim: int,
     model_cfg: dict[str, Any],
     scale_coeff: float,
+    cqr_enabled: bool = False,
+    cqr_quantiles: list[float] | None = None,
+    aux_task_override: str | None = None,
 ):
     hidden_width = int(model_cfg["encoder"]["hidden_width"])
     use_residual = bool(model_cfg["encoder"].get("residual", True))
+    resolved_aux_task = aux_task_override or str(model_cfg["hmtl"].get("aux_task", "contrastive"))
 
-    def build_model() -> HMTLModel:
+    def build_model(*, aux_task: str | None = None) -> HMTLModel:
+        effective_aux_task = aux_task or resolved_aux_task
+        q_head = None
+        if cqr_enabled:
+            q_head = QuantileHead(hidden_width, quantiles=cqr_quantiles or [0.05, 0.95])
         return HMTLModel(
             input_dim=input_dim,
             hidden_width=hidden_width,
@@ -573,13 +649,45 @@ def _build_hmtl_model_builder(
             n_bins=int(model_cfg["hmtl"]["n_bins"]),
             aux_weight=float(model_cfg["hmtl"]["lambda_aux"]),
             enable_aux=bool(model_cfg["hmtl"].get("enabled", True)),
-            aux_task=str(model_cfg["hmtl"].get("aux_task", "contrastive")),
+            aux_task=effective_aux_task,
             proj_dim=int(model_cfg["hmtl"].get("proj_dim", 50)),
             scale_coeff=scale_coeff,
             use_residual=use_residual,
+            quantile_head=q_head,
         )
 
     return build_model
+
+
+def _parse_adversarial_config(train_cfg_yaml: dict[str, Any]) -> AdversarialConfig:
+    """Parse adversarial augmentation config from train YAML."""
+    adv_raw = train_cfg_yaml.get("training", {}).get("adversarial", {})
+    if not isinstance(adv_raw, dict):
+        adv_raw = {}
+    return AdversarialConfig(
+        enabled=bool(adv_raw.get("enabled", False)),
+        method=str(adv_raw.get("method", "fgsm")),
+        epsilon=float(adv_raw.get("epsilon", 0.01)),
+        alpha=float(adv_raw.get("alpha", 0.005)),
+        pgd_steps=int(adv_raw.get("pgd_steps", 3)),
+        adv_weight=float(adv_raw.get("adv_weight", 0.5)),
+    )
+
+
+def _parse_cqr_config(train_cfg_yaml: dict[str, Any]) -> tuple[bool, list[float] | None, float, str]:
+    """Parse CQR/conformal config from train YAML.
+
+    Returns:
+        (cqr_enabled, cqr_quantiles, cqr_weight, conformal_method)
+    """
+    conformal_cfg = train_cfg_yaml.get("conformal", {})
+    if not isinstance(conformal_cfg, dict):
+        conformal_cfg = {}
+    conformal_method = str(conformal_cfg.get("method", "symmetric"))
+    cqr_enabled = conformal_method == "cqr"
+    cqr_quantiles = conformal_cfg.get("quantiles", [0.05, 0.95]) if cqr_enabled else None
+    cqr_weight = float(conformal_cfg.get("cqr_weight", 0.5))
+    return cqr_enabled, cqr_quantiles, cqr_weight, conformal_method
 
 
 def train_and_evaluate_hmtl(
@@ -607,6 +715,18 @@ def train_and_evaluate_hmtl(
     amp_dtype = str(amp_cfg["dtype"])
     amp_eval_enabled = bool(amp_cfg["eval_enabled"])
 
+    # Parse new feature configs
+    adv_config = _parse_adversarial_config(train_cfg_yaml)
+    cqr_enabled, cqr_quantiles, cqr_weight, conformal_method = _parse_cqr_config(train_cfg_yaml)
+
+    if adv_config.enabled:
+        logger.info(
+            "Adversarial training: method=%s, epsilon=%.4f, adv_weight=%.2f",
+            adv_config.method, adv_config.epsilon, adv_config.adv_weight,
+        )
+    if cqr_enabled:
+        logger.info("CQR enabled: quantiles=%s, weight=%.2f", cqr_quantiles, cqr_weight)
+
     train_cfg = TrainConfig(
         lr=float(optimizer_cfg["lr"]),
         epochs=int(train_cfg_yaml["training"]["epochs"]),
@@ -629,6 +749,10 @@ def train_and_evaluate_hmtl(
         grad_clip_norm=None if grad_clip_raw is None else float(grad_clip_raw),
         lr_scheduler_name=str(scheduler_cfg.get("name", "none")),
         lr_scheduler_eta_min_ratio=float(scheduler_cfg.get("eta_min_ratio", 0.05)),
+        cqr_enabled=cqr_enabled,
+        cqr_quantiles=cqr_quantiles,
+        cqr_weight=cqr_weight,
+        adversarial=adv_config,
     )
 
     ens_cfg = EnsembleConfig(
@@ -644,10 +768,40 @@ def train_and_evaluate_hmtl(
         else 1.0
     )
 
+    # Auto auxiliary task selection
+    aux_task_from_cfg = str(model_cfg["hmtl"].get("aux_task", "contrastive"))
+    resolved_aux_task = aux_task_from_cfg
+    if aux_task_from_cfg == "auto":
+        logger.info("Running auto aux task selection...")
+        auto_candidates = model_cfg["hmtl"].get(
+            "auto_candidates", ["bins", "contrastive", "reconstruction", "rank"]
+        )
+        auto_pilot_epochs = int(model_cfg["hmtl"].get("auto_pilot_epochs", 30))
+
+        pilot_build_model = _build_hmtl_model_builder(
+            input_dim=input_dim,
+            model_cfg=model_cfg,
+            scale_coeff=scale_coeff,
+            cqr_enabled=cqr_enabled,
+            cqr_quantiles=cqr_quantiles,
+        )
+        resolved_aux_task = select_best_aux_task(
+            build_model_fn=pilot_build_model,
+            X_tr=X_tr, y_tr=y_tr, X_va=X_va, y_va=y_va,
+            n_bins=int(model_cfg["hmtl"]["n_bins"]),
+            train_cfg=train_cfg,
+            candidates=auto_candidates,
+            pilot_epochs=auto_pilot_epochs,
+        )
+        logger.info("Auto-selected aux_task: %s", resolved_aux_task)
+
     build_model = _build_hmtl_model_builder(
         input_dim=input_dim,
         model_cfg=model_cfg,
         scale_coeff=scale_coeff,
+        cqr_enabled=cqr_enabled,
+        cqr_quantiles=cqr_quantiles,
+        aux_task_override=resolved_aux_task,
     )
 
     models, avg_score = fit_ensemble(
@@ -670,18 +824,28 @@ def train_and_evaluate_hmtl(
         coverage_levels=[0.80, 0.90, 0.95],
         preprocessor=preprocessor,
         use_normalized_metrics=True,
+        conformal_method=conformal_method,
     )
 
     metrics = _metrics_to_dict(eval_results.metrics)
     metrics["ensemble_avg_val_score"] = float(avg_score)
     metrics["ensemble_avg_val_r_auc_mse"] = float(avg_score)
+    metrics["resolved_aux_task"] = resolved_aux_task
+
+    # Add CQR metrics if available
+    if eval_results.pi_metrics_cqr:
+        for level, pi_metrics in eval_results.pi_metrics_cqr.items():
+            pct = int(level * 100)
+            metrics[f"cqr_coverage_{pct}"] = float(pi_metrics["coverage"])
+            metrics[f"cqr_mean_width_{pct}"] = float(pi_metrics["mean_width"])
 
     logger.info(
-        "HMTL metrics: rmse=%.6f r_auc_mse=%.6f (val_metric=%s avg_val_score=%.6f)",
+        "HMTL metrics: rmse=%.6f r_auc_mse=%.6f (val_metric=%s avg_val_score=%.6f, aux_task=%s)",
         metrics["rmse"],
         metrics["r_auc_mse"],
         early_stop_metric,
         metrics["ensemble_avg_val_score"],
+        resolved_aux_task,
     )
     return metrics
 
@@ -1544,7 +1708,7 @@ def run_automlbenchmark_experiments(
                         show_inner_progress=not high_level_progress_only,
                     )
                 except Exception as exc:
-                    logger.error(
+                    logger.exception(
                         "Dataset %d failed (%s): %s",
                         dataset_meta.dataset_id,
                         dataset_meta.dataset_name,
@@ -1615,7 +1779,7 @@ def run_automlbenchmark_experiments(
                         try:
                             dataset_result = future.result()
                         except Exception as exc:
-                            logger.error(
+                            logger.exception(
                                 "Dataset %d failed (%s): %s",
                                 dataset_meta.dataset_id,
                                 dataset_meta.dataset_name,

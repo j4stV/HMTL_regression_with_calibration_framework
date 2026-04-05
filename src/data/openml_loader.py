@@ -522,14 +522,19 @@ def _normalize_bundle_features(
             continue
 
         if pd.api.types.is_numeric_dtype(col_series):
-            normalized_features[col] = pd.to_numeric(col_series, errors="coerce").astype(np.float64)
+            coerced = pd.to_numeric(col_series, errors="coerce")
+            normalized_features[col] = pd.array(
+                coerced.to_numpy(dtype=np.float64, na_value=np.nan), dtype=np.float64
+            )
             continue
 
         numeric_series = pd.to_numeric(col_series, errors="coerce")
         n_non_null = int(col_series.notna().sum())
         n_numeric = int(numeric_series.notna().sum())
         if n_numeric == n_non_null:
-            normalized_features[col] = numeric_series.astype(np.float64)
+            normalized_features[col] = pd.array(
+                numeric_series.to_numpy(dtype=np.float64, na_value=np.nan), dtype=np.float64
+            )
             logger.debug("Column '%s' parsed as numeric from non-numeric dtype", col)
             continue
 
@@ -560,7 +565,10 @@ def load_dataset_bundle(
             df_features,
             categorical_columns,
         )
-        normalized_features[target_col] = y
+        # Ensure target is plain numpy-compatible numeric type.
+        # OpenML may return nullable/Arrow-backed series that break np.isfinite.
+        y_numeric = pd.to_numeric(pd.Series(y), errors="coerce")
+        normalized_features[target_col] = y_numeric.to_numpy(dtype=np.float64, na_value=np.nan)
 
         logger.info(f"Dataset shape: {normalized_features.shape}, target: {target_col}")
         logger.info(f"Features: {len(normalized_features.columns) - 1}, samples: {len(normalized_features)}")

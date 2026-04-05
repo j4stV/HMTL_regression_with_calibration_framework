@@ -60,7 +60,15 @@ class TabularPreprocessor:
     def _to_float_feature_matrix(X: pd.DataFrame | np.ndarray) -> np.ndarray:
         """Convert feature matrix to float64, coercing non-numeric values to NaN."""
         if isinstance(X, pd.DataFrame):
-            return X.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
+            # Convert each column individually to handle extension dtypes
+            # (nullable Int64, ArrowDtype, etc.) that pd.to_numeric may not
+            # fully resolve into plain numpy float64.
+            cols = {}
+            for col in X.columns:
+                s = pd.to_numeric(X[col], errors="coerce")
+                cols[col] = s.to_numpy(dtype=np.float64, na_value=np.nan)
+            result = np.column_stack(list(cols.values())) if cols else np.empty((len(X), 0), dtype=np.float64)
+            return result
 
         arr = np.asarray(X)
         if arr.dtype.kind in "biufc":
