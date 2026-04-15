@@ -129,8 +129,8 @@ def test_build_effective_size_configs_balanced_policy():
     assert small["model_cfg"]["encoder"]["hidden_width"] == 96
     assert small["model_cfg"]["hmtl"]["high_layer"] == 10
     assert small["model_cfg"]["hmtl"]["low_layer"] == 4
-    assert small["preprocess_config"].pca_enabled is True
-    assert small["preprocess_config"].pca_n_components == 0.95
+    assert small["preprocess_config"].pca_enabled is False
+    assert small["preprocess_config"].pca_n_components is None
 
     large = size_script._build_effective_size_configs(
         base_model_cfg=base_model_cfg,
@@ -151,14 +151,16 @@ def test_build_effective_size_configs_balanced_policy():
     assert large["model_cfg"]["hmtl"]["high_layer"] == 16
     assert large["model_cfg"]["hmtl"]["low_layer"] == 10
     assert large["model_cfg"]["hmtl"]["lambda_aux"] == 0.35
-    assert large["preprocess_config"].pca_enabled is True
-    assert large["preprocess_config"].pca_n_components == 0.99
-    # Verify new adaptive policies for large regime
-    assert large["adaptive_policy"]["adversarial_policy"] == "fgsm_standard"
-    assert large["adaptive_policy"]["cqr_policy"] == "cqr_enabled"
+    assert large["preprocess_config"].pca_enabled is False
+    assert large["preprocess_config"].pca_n_components is None
+    # Verify adaptive policies for large regime (adv/CQR light, PCA/binning disabled)
+    assert large["adaptive_policy"]["adversarial_policy"] == "fgsm_light"
+    assert large["adaptive_policy"]["cqr_policy"] == "cqr_light"
     assert large["adaptive_policy"]["auto_aux_policy"] == "auto_selection"
     assert large["train_cfg_yaml"]["training"]["adversarial"]["enabled"] is True
+    assert large["train_cfg_yaml"]["training"]["adversarial"]["adv_weight"] == 0.15
     assert large["train_cfg_yaml"]["conformal"]["method"] == "cqr"
+    assert large["train_cfg_yaml"]["conformal"]["cqr_weight"] == 0.15
 
     large_low_feature = size_script._build_effective_size_configs(
         base_model_cfg=base_model_cfg,
@@ -344,7 +346,7 @@ def test_run_single_dataset_experiment_smoke_with_two_baselines(monkeypatch, tmp
     assert "adaptive_policy" in seed_payload
     assert "effective_config" in seed_payload
     assert "ensemble_val_metric" in seed_payload
-    assert seed_payload["ensemble_val_metric"] == "hybrid_rmse_rauc"
+    assert seed_payload["ensemble_val_metric"] == "rmse"
 
     saved_path = tmp_path / "dataset_123_toy_dataset" / "results.json"
     assert saved_path.exists()
@@ -1103,3 +1105,66 @@ def test_run_size_seed_trial_retries_hmtl_with_amp_disabled_after_fp16_bfloat16_
     assert result["hmtl"]["rmse"] == 1.0
     assert result["amp_dtype_fallback"]["from"] == "fp16"
     assert result["amp_dtype_fallback"]["to"] == "amp_disabled"
+
+
+def test_build_effective_configs_disables_harmful_features():
+    """After the fix, adaptive policy must disable adv, CQR, PCA, binning for all regimes."""
+    base_model_cfg = {
+        "encoder": {"hidden_width": 128, "alpha_dropout": 0.0},
+        "hmtl": {
+            "low_layer": 12, "high_layer": 18,
+            "n_bins": 5, "lambda_aux": 0.5, "enabled": True,
+        },
+    }
+    base_train_cfg = {
+        "training": {
+            "batch_size": 4096,
+            "early_stop": {"metric": "r_auc_mse", "patience": 15},
+            "adversarial": {"enabled": True, "method": "fgsm",
+                            "epsilon": 0.01, "adv_weight": 0.5},
+        },
+        "conformal": {"method": "cqr", "quantiles": [0.05, 0.95],
+                       "cqr_weight": 0.5},
+    }
+    base_ensemble_cfg = {"ensemble": {"n_models": 20, "bagging": "stratified_kfold"}}
+    base_preprocess = PreprocessConfig(
+        impute_const=-1.0,
+        use_dynamic_binning=True,
+        standardize=True,
+        pca_enabled=True,
+        pca_n_components=0.99,
+        target_standardize=True,
+    )
+
+    # Large regime, high-dim dataset
+    result = size_script._build_effective_size_configs(
+        base_model_cfg=base_model_cfg,
+        base_train_cfg_yaml=base_train_cfg,
+        base_ensemble_cfg_yaml=base_ensemble_cfg,
+        base_preprocess_config=base_preprocess,
+        size_ratio=1.0,
+        n_train_size=5000,
+        n_features=300,
+    )
+
+    eff = result["effective_config"]
+
+    # Adversarial must be light (enabled with low weight)
+    assert eff["train"]["adversarial"]["enabled"] is True
+    assert eff["train"]["adversarial"]["adv_weight"] == 0.15
+    assert eff["train"]["adversarial"]["epsilon"] == 0.005
+
+    # CQR must be light (enabled with low weight)
+    assert eff["train"]["cqr"]["method"] == "cqr"
+    assert eff["train"]["cqr"]["cqr_weight"] == 0.15
+
+    # PCA must be disabled
+    preprocess_out = result["preprocess_config"]
+    assert preprocess_out.pca_enabled is False
+
+    # Dynamic binning must be disabled
+    assert preprocess_out.use_dynamic_binning is False
+    assert preprocess_out.standardize is True
+
+    # Early stop must be pure RMSE
+    assert eff["train"]["early_stop"]["metric"] == "rmse"

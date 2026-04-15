@@ -215,12 +215,10 @@ def _build_effective_size_configs(
     configured_metric = _normalize_early_stop_metric_name(
         early_stop_cfg.get("metric", "hybrid_rmse_rauc")
     )
-    # Keep backward compatibility with old config defaults while switching the
-    # AutoML benchmark path to the hybrid objective.
-    if configured_metric == "r_auc_mse":
-        configured_metric = "hybrid_rmse_rauc"
-    early_stop_cfg["metric"] = configured_metric
-    early_stop_cfg["hybrid_r_auc_weight"] = float(early_stop_cfg.get("hybrid_r_auc_weight", 0.25))
+    # Use pure RMSE for early stopping — select the most accurate checkpoint.
+    # Uncertainty quality (R-AUC MSE) is still computed and reported, but
+    # should not influence model selection in a benchmark comparing RMSE.
+    early_stop_cfg["metric"] = "rmse"
 
     optimizer_cfg = train_cfg_yaml.setdefault("optimizer", {})
     base_weight_decay = float(
@@ -313,73 +311,59 @@ def _build_effective_size_configs(
         ensemble_block["bagging"] = "stratified_bins"
         ensemble_block["n_models"] = int(min(base_n_models, 10))
 
-    base_pca_n_components = base_preprocess_config.pca_n_components
-    pca_n_components = base_pca_n_components
-    if regime == "tiny":
-        if n_features >= 64:
-            preprocess_config.pca_enabled = True
-            if pca_n_components is None:
-                pca_n_components = 0.95
-            pca_policy = "enabled_for_tiny_high_dim"
-        else:
-            preprocess_config.pca_enabled = False
-            pca_policy = "disabled_for_tiny_low_dim"
-    elif regime == "small":
-        if n_features < 64:
-            preprocess_config.pca_enabled = False
-            pca_policy = "disabled_for_small_low_dim"
-        else:
-            preprocess_config.pca_enabled = True
-            if pca_n_components is None:
-                pca_n_components = 0.95 if n_features > 256 else 0.99
-            pca_policy = "enabled_for_small_mid_high_dim"
+    # --- PCA policy ---
+    # Disabled for most datasets: PCA destroys nonlinear feature interactions.
+    # Exception: extreme dimensionality (>1000 features) where the network
+    # cannot handle raw input (e.g. Santander 4991F diverges without PCA).
+    if n_features > 1000:
+        preprocess_config.pca_enabled = True
+        preprocess_config.pca_n_components = 0.99
+        pca_policy = "enabled_extreme_dim"
     else:
-        if n_features <= 16:
-            preprocess_config.pca_enabled = False
-            pca_policy = "disabled_large_low_dim"
-        elif n_features <= 256:
-            preprocess_config.pca_enabled = bool(n_train_size >= 2000)
-            if preprocess_config.pca_enabled and pca_n_components is None:
-                pca_n_components = 0.99
-            pca_policy = "conditional_large_mid_dim"
-        else:
-            preprocess_config.pca_enabled = True
-            if pca_n_components is None:
-                pca_n_components = 0.95
-            pca_policy = "enabled_large_high_dim"
+        preprocess_config.pca_enabled = False
+        preprocess_config.pca_n_components = None
+        pca_policy = "disabled"
 
-    preprocess_config.pca_n_components = pca_n_components
+    # --- Binning policy ---
+    # Disabled: dynamic binning discretizes continuous features, destroying
+    # fine-grained numerical signal that the SNN encoder needs.
+    preprocess_config.use_dynamic_binning = False
+    preprocess_config.quantile_binning_enabled = False
+    preprocess_config.standardize = True
+    binning_policy = "disabled"
+
+    # --- Sigma regularization ---
+    # Penalize inflated sigma to prevent Gaussian NLL from suppressing mu gradients.
+    # Without this, sigma can grow unbounded (observed 8x RMSE), making the loss
+    # landscape flat w.r.t. mu and degrading prediction accuracy.
+    training_cfg["sigma_reg_weight"] = 0.02
 
     # --- Adaptive adversarial augmentation policy ---
+    # Conservative weights: epsilon=0.005, weight=0.15 (was 0.5).
+    # Provides robustness without overwhelming the primary NLL loss.
     adv_cfg = training_cfg.setdefault("adversarial", {})
     if regime == "tiny":
-        # Too few samples — overhead not worth it
         adv_cfg["enabled"] = False
         adv_policy = "disabled_for_tiny"
-    elif regime == "small":
+    else:
         adv_cfg["enabled"] = True
         adv_cfg["method"] = "fgsm"
         adv_cfg["epsilon"] = 0.005
-        adv_cfg["adv_weight"] = 0.3
-        adv_policy = "fgsm_conservative"
-    else:
-        adv_cfg["enabled"] = True
-        adv_cfg["method"] = "fgsm"
-        adv_cfg["epsilon"] = 0.01
-        adv_cfg["adv_weight"] = 0.5
-        adv_policy = "fgsm_standard"
+        adv_cfg["adv_weight"] = 0.15
+        adv_policy = "fgsm_light"
 
     # --- Adaptive CQR policy ---
+    # Conservative weight: cqr_weight=0.15 (was 0.5).
+    # Improves calibration without degrading mu predictions through shared encoder.
     conformal_cfg = train_cfg_yaml.setdefault("conformal", {})
     if regime == "tiny":
-        # Not enough calibration data
         conformal_cfg["method"] = "symmetric"
         cqr_policy = "disabled_for_tiny"
     else:
         conformal_cfg["method"] = "cqr"
         conformal_cfg["quantiles"] = [0.05, 0.95]
-        conformal_cfg["cqr_weight"] = 0.5
-        cqr_policy = "cqr_enabled"
+        conformal_cfg["cqr_weight"] = 0.15
+        cqr_policy = "cqr_light"
 
     # --- Adaptive auto aux task policy ---
     if regime == "large":
@@ -396,7 +380,6 @@ def _build_effective_size_configs(
             "batch_size": int(training_cfg["batch_size"]),
             "early_stop": {
                 "metric": str(early_stop_cfg["metric"]),
-                "hybrid_r_auc_weight": float(early_stop_cfg["hybrid_r_auc_weight"]),
                 "patience": int(early_stop_cfg.get("patience", 10)),
             },
             "adversarial": {
@@ -439,6 +422,7 @@ def _build_effective_size_configs(
             f"min(base_batch, max(16, floor(n_train_size/{batch_divisor})))"
         ),
         "pca_policy": pca_policy,
+        "binning_policy": str(binning_policy),
         "adversarial_policy": adv_policy,
         "cqr_policy": cqr_policy,
         "auto_aux_policy": auto_aux_policy,

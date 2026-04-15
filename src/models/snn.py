@@ -70,7 +70,10 @@ class RegressionHead(nn.Module):
         mu = self.mu(h)
         # Scale = 1e-6 + softplus((1.0 / scale_coeff) * raw_sigma)
         raw_sigma = self.raw_sigma(h)
-        sigma = 1e-6 + torch.nn.functional.softplus((1.0 / self.scale_coeff) * raw_sigma)
+        sigma = 1e-6 + torch.clamp(
+            torch.nn.functional.softplus((1.0 / self.scale_coeff) * raw_sigma),
+            max=3.0,
+        )
         return mu, sigma
 
 # Повышение устойчивости через аугментации - подумать

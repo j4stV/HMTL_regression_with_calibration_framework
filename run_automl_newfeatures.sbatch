@@ -30,8 +30,8 @@ export NUMEXPR_NUM_THREADS=1
 mkdir -p "$PROJECT_DIR/logs"
 
 .venv/bin/python scripts/run_automlbenchmark_experiment.py \
-  --output "$PROJECT_DIR/experiments/automl_newfeatures_v1" \
-  --n-seeds 3 \
+  --output "$PROJECT_DIR/experiments/automl_newfeatures_v2" \
+  --n-seeds 2 \
   --baselines catboost single_mlp \
   --max-dataset-workers 6 \
   --high-level-progress-only
