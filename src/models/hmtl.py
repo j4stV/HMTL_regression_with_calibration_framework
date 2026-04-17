@@ -32,6 +32,7 @@ class HMTLModel(nn.Module):
         aux_task: str = "contrastive",  # "bins", "contrastive", "reconstruction", "rank", "multi"
         proj_dim: int = 50,  # Default 50
         scale_coeff: float = 1.0,  # Target std for sigma scaling
+        sigma_max: float = 5.0,  # Max sigma in standardized space
         task_head: nn.Module | None = None,  # Injectable task head for multi-task support
         use_residual: bool = True,
         quantile_head: nn.Module | None = None,  # Optional CQR quantile head
@@ -64,7 +65,11 @@ class HMTLModel(nn.Module):
 
         # Task head: injected for flexibility, defaults to RegressionHead for backward compatibility
         if task_head is None:
-            self.task_head = RegressionHead(self.encoder_high.output_dim, scale_coeff=scale_coeff)
+            self.task_head = RegressionHead(
+                self.encoder_high.output_dim,
+                scale_coeff=scale_coeff,
+                sigma_max=sigma_max,
+            )
         else:
             self.task_head = task_head
 

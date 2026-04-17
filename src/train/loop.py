@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Optional
@@ -41,6 +42,7 @@ class TrainConfig:
     grad_clip_norm: float | None = 1.0
     lr_scheduler_name: str = "none"  # "none" or "cosine"
     lr_scheduler_eta_min_ratio: float = 0.05
+    lr_warmup_epochs: int = 2
     # CQR (Conformal Quantile Regression)
     cqr_enabled: bool = False
     cqr_quantiles: list[float] | None = None
@@ -412,9 +414,11 @@ def train_model(
     logger.debug(f"Training data shape: {X_tr.shape}, Validation data shape: {X_va.shape}")
     logger.debug(f"Training config: lr={cfg.lr}, epochs={cfg.epochs}, batch_size={cfg.batch_size}, patience={cfg.patience}, optimizer={cfg.optimizer}")
 
-    # Determine if we should use rounding approach (for contrastive learning)
+    # Determine aux task type (needed for classification bin handling below)
     aux_task = getattr(model, "aux_task", "bins")
-    use_rounding = (aux_task == "contrastive")
+    # Always use quantile-based bins (balanced bin sizes).
+    # Rounding was previously used for contrastive but produced unbalanced bins.
+    use_rounding = False
 
     # Prepare datasets based on task type
     if cfg.task_type == "regression":
@@ -474,11 +478,11 @@ def train_model(
         logger.info(f"Using AdamW optimizer (weight_decay={cfg.weight_decay})")
 
     normalized_scheduler = _normalize_lr_scheduler_name(cfg.lr_scheduler_name)
+    scheduler_optimizer = getattr(optim, "base_optimizer", optim)
     scheduler = None
     if normalized_scheduler == "cosine":
         eta_min_ratio = max(0.0, float(cfg.lr_scheduler_eta_min_ratio))
         eta_min = float(cfg.lr) * eta_min_ratio
-        scheduler_optimizer = getattr(optim, "base_optimizer", optim)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             scheduler_optimizer,
             T_max=max(1, int(cfg.epochs)),
@@ -492,6 +496,27 @@ def train_model(
         )
     else:
         logger.info("LR scheduler disabled")
+
+    # LR warmup: linearly ramp from lr/10 to lr over warmup_epochs
+    if cfg.lr_warmup_epochs > 0 and isinstance(scheduler_optimizer, torch.optim.Optimizer):
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            scheduler_optimizer,
+            start_factor=0.1,
+            total_iters=cfg.lr_warmup_epochs,
+        )
+        if scheduler is not None:
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                scheduler_optimizer,
+                schedulers=[warmup_scheduler, scheduler],
+                milestones=[cfg.lr_warmup_epochs],
+            )
+        else:
+            scheduler = warmup_scheduler
+        logger.info(
+            "LR warmup: %d epochs (start_factor=0.1)",
+            cfg.lr_warmup_epochs,
+        )
+
     logger.info("Gradient clipping: %s", cfg.grad_clip_norm)
     
     ce = nn.CrossEntropyLoss()
@@ -631,12 +656,34 @@ def train_model(
                     torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
                 optim.step()
             
-            epoch_loss += loss.item()
+            loss_val = loss.item()
+            if not math.isfinite(loss_val):
+                logger.warning(
+                    f"Epoch {epoch+1}: NaN/Inf loss detected ({loss_val}). Skipping batch."
+                )
+                continue
+            epoch_loss += loss_val
             num_batches += 1
-            batch_pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+            batch_pbar.set_postfix({"loss": f"{loss_val:.4f}"})
 
         avg_train_loss = epoch_loss / num_batches if num_batches > 0 else 0.0
         logger.debug(f"Epoch {epoch+1}: Average training loss = {avg_train_loss:.6f}")
+
+        # Periodic check for NaN in model parameters (every 10 epochs)
+        if epoch % 10 == 0:
+            has_nan = any(
+                torch.isnan(p).any().item()
+                for p in model.parameters()
+                if p is not None
+            )
+            if has_nan:
+                logger.error(
+                    f"Epoch {epoch+1}: NaN detected in model parameters. "
+                    f"Restoring best checkpoint and stopping training."
+                )
+                if best_state_dict is not None:
+                    model.load_state_dict(best_state_dict)
+                break
 
         # Validation
         model.eval()
@@ -719,7 +766,20 @@ def train_model(
         })
 
         stop_training = False
-        if score < best:
+        if not math.isfinite(score):
+            logger.warning(
+                f"Epoch {epoch+1}: NaN/Inf validation score ({score}). "
+                f"Treating as failed epoch."
+            )
+            wait += 1
+            if wait >= cfg.patience:
+                logger.info(
+                    f"Early stopping triggered at epoch {epoch+1} "
+                    f"(patience: {cfg.patience}, last score was NaN/Inf)"
+                )
+                early_stop_epoch = epoch
+                stop_training = True
+        elif score < best:
             improvement = best - score if best != float("inf") else 0.0
             best = score
             best_epoch = epoch

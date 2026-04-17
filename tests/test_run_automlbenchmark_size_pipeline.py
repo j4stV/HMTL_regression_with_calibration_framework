@@ -143,10 +143,10 @@ def test_build_effective_size_configs_balanced_policy():
     )
     assert large["adaptive_policy"]["regime"] == "large"
     assert large["train_cfg_yaml"]["training"]["batch_size"] == 416
-    assert large["ensemble_cfg_yaml"]["ensemble"]["n_models"] == 20
+    assert large["ensemble_cfg_yaml"]["ensemble"]["n_models"] == 15  # large regime capped at 15
     assert large["ensemble_cfg_yaml"]["ensemble"]["bagging"] == "stratified_kfold"
     assert large["model_cfg"]["hmtl"]["enabled"] is True
-    assert large["model_cfg"]["hmtl"]["aux_task"] == "auto"  # large regime uses auto-selection
+    assert large["model_cfg"]["hmtl"]["aux_task"] == "auto"  # large regime uses auto selection
     assert large["model_cfg"]["encoder"]["hidden_width"] == 128
     assert large["model_cfg"]["hmtl"]["high_layer"] == 16
     assert large["model_cfg"]["hmtl"]["low_layer"] == 10
@@ -174,7 +174,7 @@ def test_build_effective_size_configs_balanced_policy():
     assert large_low_feature["model_cfg"]["encoder"]["hidden_width"] == 64
     assert large_low_feature["model_cfg"]["hmtl"]["high_layer"] == 8
     assert large_low_feature["model_cfg"]["hmtl"]["low_layer"] == 3
-    assert large_low_feature["model_cfg"]["hmtl"]["aux_task"] == "auto"  # large regime uses auto
+    assert large_low_feature["model_cfg"]["hmtl"]["aux_task"] == "auto"  # large regime uses auto selection
     assert large_low_feature["model_cfg"]["hmtl"]["lambda_aux"] == 0.25
 
     large_mid_low_feature = size_script._build_effective_size_configs(
@@ -203,7 +203,7 @@ def test_build_effective_size_configs_balanced_policy():
     assert large_high_dim["model_cfg"]["encoder"]["hidden_width"] == 128
     assert large_high_dim["model_cfg"]["hmtl"]["high_layer"] == 18
     assert large_high_dim["model_cfg"]["hmtl"]["low_layer"] == 12
-    assert large_high_dim["model_cfg"]["hmtl"]["aux_task"] == "auto"  # large regime uses auto
+    assert large_high_dim["model_cfg"]["hmtl"]["aux_task"] == "auto"  # large regime uses auto selection
     assert large_high_dim["model_cfg"]["hmtl"]["lambda_aux"] == 0.5
 
 

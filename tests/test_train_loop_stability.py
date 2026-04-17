@@ -52,6 +52,7 @@ def test_train_model_cosine_scheduler_reduces_learning_rate() -> None:
             grad_clip_norm=None,
             lr_scheduler_name="cosine",
             lr_scheduler_eta_min_ratio=0.05,
+            lr_warmup_epochs=0,
         ),
         history=history,
     )

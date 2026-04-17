@@ -53,16 +53,17 @@ class SNNEncoder(nn.Module):
 
 class RegressionHead(nn.Module):
     """Regression head.
-    
+
     Scale = 1e-6 + softplus((1.0 / scale_coeff) * raw_sigma)
     where scale_coeff is the target standard deviation.
     This allows sigma to be learned in standardized space and scaled back.
-    """ 
-    def __init__(self, in_dim: int, scale_coeff: float = 1.0) -> None:
+    """
+    def __init__(self, in_dim: int, scale_coeff: float = 1.0, sigma_max: float = 5.0) -> None:
         super().__init__()
         self.mu = nn.Linear(in_dim, 1, bias=False)
         self.raw_sigma = nn.Linear(in_dim, 1, bias=False)
         self.scale_coeff = scale_coeff
+        self.sigma_max = sigma_max
         lecun_normal_(self.mu.weight)
         lecun_normal_(self.raw_sigma.weight)
 
@@ -72,7 +73,7 @@ class RegressionHead(nn.Module):
         raw_sigma = self.raw_sigma(h)
         sigma = 1e-6 + torch.clamp(
             torch.nn.functional.softplus((1.0 / self.scale_coeff) * raw_sigma),
-            max=3.0,
+            max=self.sigma_max,
         )
         return mu, sigma
 

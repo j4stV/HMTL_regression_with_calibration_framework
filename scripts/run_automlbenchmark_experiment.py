@@ -12,6 +12,7 @@ import copy
 import concurrent.futures as futures
 import json
 import logging
+import math
 import multiprocessing
 import os
 import re
@@ -234,6 +235,17 @@ def _build_effective_size_configs(
     adaptive_batch_size = int(min(base_batch_size, max(16, n_train_size // batch_divisor)))
     training_cfg["batch_size"] = adaptive_batch_size
 
+    # LR scaling: gentle sqrt scaling with tight clamp [0.7, 1.5].
+    # Linear scaling [0.25, 4.0] caused regressions in V4:
+    # - tiny datasets (tecator, sensory) hit 0.25x minimum → undertrained
+    # - large datasets (pol) hit 3x+ → destabilized
+    # Sqrt scaling is theoretically motivated (variance arguments) and gentler.
+    reference_batch_size = 256
+    base_lr = float(optimizer_cfg.get("lr", 3e-4))
+    lr_scale_factor = math.sqrt(adaptive_batch_size / reference_batch_size)
+    lr_scale_factor = max(0.7, min(lr_scale_factor, 1.5))
+    optimizer_cfg["lr"] = float(base_lr * lr_scale_factor)
+
     encoder_cfg = model_cfg.setdefault("encoder", {})
     hmtl_cfg = model_cfg.setdefault("hmtl", {})
 
@@ -299,6 +311,17 @@ def _build_effective_size_configs(
         hmtl_cfg["high_layer"] = int(max(1, hmtl_cfg["high_layer"]))
         hmtl_cfg["low_layer"] = int(max(1, min(hmtl_cfg["low_layer"], hmtl_cfg["high_layer"])))
 
+    # --- Weight decay for high-dimensional large-regime datasets only ---
+    # Neural networks struggle with p >> n without strong regularization, but
+    # tiny/small regimes already set weight decay (1e-4, 5e-5) above, and
+    # adding 5e-4 on top over-regularized them (observed tecator, sensory regressions).
+    current_wd = float(optimizer_cfg.get("weight_decay", 0.0))
+    if regime == "large":
+        if n_features > 500:
+            optimizer_cfg["weight_decay"] = float(max(current_wd, 1e-3))
+        elif n_features > 100:
+            optimizer_cfg["weight_decay"] = float(max(current_wd, 5e-4))
+
     ensemble_block = ensemble_cfg_yaml.setdefault("ensemble", {})
     base_ensemble_block = base_ensemble_cfg_yaml.get("ensemble", {})
     base_n_models = int(base_ensemble_block.get("n_models", ensemble_block.get("n_models", 5)))
@@ -310,15 +333,24 @@ def _build_effective_size_configs(
     elif regime == "small":
         ensemble_block["bagging"] = "stratified_bins"
         ensemble_block["n_models"] = int(min(base_n_models, 10))
+    else:  # large regime: cap at 15 (diminishing returns past ~10)
+        ensemble_block["n_models"] = int(min(base_n_models, 15))
 
     # --- PCA policy ---
     # Disabled for most datasets: PCA destroys nonlinear feature interactions.
-    # Exception: extreme dimensionality (>1000 features) where the network
-    # cannot handle raw input (e.g. Santander 4991F diverges without PCA).
+    # For extreme dimensionality (>1000 features, e.g. Santander 4991F):
+    #   aggressive PCA capped at n_train/2 components to prevent p >> n collapse.
+    # For high dimensionality (>500 features, e.g. QSAR 1024F):
+    #   moderate PCA retaining 99% variance.
     if n_features > 1000:
         preprocess_config.pca_enabled = True
-        preprocess_config.pca_n_components = 0.99
+        max_components = max(50, n_train_size // 2)
+        preprocess_config.pca_n_components = min(0.95, max_components)
         pca_policy = "enabled_extreme_dim"
+    elif n_features > 500:
+        preprocess_config.pca_enabled = True
+        preprocess_config.pca_n_components = 0.99
+        pca_policy = "enabled_high_dim"
     else:
         preprocess_config.pca_enabled = False
         preprocess_config.pca_n_components = None
@@ -336,15 +368,24 @@ def _build_effective_size_configs(
     # Penalize inflated sigma to prevent Gaussian NLL from suppressing mu gradients.
     # Without this, sigma can grow unbounded (observed 8x RMSE), making the loss
     # landscape flat w.r.t. mu and degrading prediction accuracy.
-    training_cfg["sigma_reg_weight"] = 0.02
+    # Regime-dependent: lighter for large datasets (more data to naturally calibrate),
+    # stronger for tiny datasets (need regularization to prevent sigma collapse).
+    sigma_reg_by_regime = {"tiny": 0.05, "small": 0.02, "large": 0.01}
+    training_cfg["sigma_reg_weight"] = sigma_reg_by_regime[regime]
 
     # --- Adaptive adversarial augmentation policy ---
-    # Conservative weights: epsilon=0.005, weight=0.15 (was 0.5).
-    # Provides robustness without overwhelming the primary NLL loss.
+    # Conservative weights scaled by dataset characteristics.
+    # High-dim or small datasets get lighter adversarial to avoid destabilization.
     adv_cfg = training_cfg.setdefault("adversarial", {})
     if regime == "tiny":
         adv_cfg["enabled"] = False
         adv_policy = "disabled_for_tiny"
+    elif n_features > 500 or n_train_size < 5000:
+        adv_cfg["enabled"] = True
+        adv_cfg["method"] = "fgsm"
+        adv_cfg["epsilon"] = 0.002
+        adv_cfg["adv_weight"] = 0.05
+        adv_policy = "fgsm_very_light"
     else:
         adv_cfg["enabled"] = True
         adv_cfg["method"] = "fgsm"
@@ -366,13 +407,21 @@ def _build_effective_size_configs(
         cqr_policy = "cqr_light"
 
     # --- Adaptive auto aux task policy ---
+    # Auto-selection enabled for ALL large-regime datasets. V2 analysis showed
+    # that low-dim datasets (pol, abalone, elevators, colleges) benefit from
+    # contrastive learning when auto selection picks it. V4's n_features>256
+    # gate lost this benefit.
+    # Candidates restricted to [bins, contrastive] — reconstruction and rank
+    # proved unstable in long training runs (observed 30-40x RMSE explosions
+    # on Mercedes_Benz, QSAR-TID-11, QSAR-TID-10980, topo_2_1).
+    # Stability penalty (in select_best_aux_task) prevents unstable picks.
     if regime == "large":
         hmtl_cfg["aux_task"] = "auto"
-        hmtl_cfg["auto_candidates"] = ["bins", "contrastive", "reconstruction", "rank"]
-        hmtl_cfg["auto_pilot_epochs"] = 30
+        hmtl_cfg["auto_candidates"] = ["bins", "contrastive"]
+        hmtl_cfg["auto_pilot_epochs"] = 40
         auto_aux_policy = "auto_selection"
     else:
-        # tiny/small: keep hardcoded bins (cheap, stable)
+        # tiny/small: keep hardcoded bins (cheap, stable, pilot overhead not worth it)
         auto_aux_policy = "hardcoded"
 
     effective_config = {
@@ -611,6 +660,7 @@ def _build_hmtl_model_builder(
     input_dim: int,
     model_cfg: dict[str, Any],
     scale_coeff: float,
+    sigma_max: float = 5.0,
     cqr_enabled: bool = False,
     cqr_quantiles: list[float] | None = None,
     aux_task_override: str | None = None,
@@ -636,6 +686,7 @@ def _build_hmtl_model_builder(
             aux_task=effective_aux_task,
             proj_dim=int(model_cfg["hmtl"].get("proj_dim", 50)),
             scale_coeff=scale_coeff,
+            sigma_max=sigma_max,
             use_residual=use_residual,
             quantile_head=q_head,
         )
@@ -798,6 +849,44 @@ def train_and_evaluate_hmtl(
         ens_cfg=ens_cfg,
         train_cfg=train_cfg,
     )
+
+    # Fallback: if training completely failed, retry with simplified architecture
+    if not math.isfinite(avg_score) or avg_score > 1e6:
+        logger.warning(
+            "Training failed (avg_score=%.4f). Retrying with simplified config "
+            "(halved depth, bins aux task).",
+            avg_score,
+        )
+        simplified_model_cfg = copy.deepcopy(model_cfg)
+        simplified_model_cfg["hmtl"]["high_layer"] = max(
+            4, int(model_cfg["hmtl"]["high_layer"]) // 2
+        )
+        simplified_model_cfg["hmtl"]["low_layer"] = max(
+            2, int(model_cfg["hmtl"]["low_layer"]) // 2
+        )
+        simplified_model_cfg["encoder"]["alpha_dropout"] = max(
+            0.01, float(model_cfg["encoder"]["alpha_dropout"])
+        )
+        build_model_simple = _build_hmtl_model_builder(
+            input_dim=input_dim,
+            model_cfg=simplified_model_cfg,
+            scale_coeff=scale_coeff,
+            cqr_enabled=cqr_enabled,
+            cqr_quantiles=cqr_quantiles,
+            aux_task_override="bins",
+        )
+        models, avg_score = fit_ensemble(
+            build_model_fn=build_model_simple,
+            X_tr=X_tr,
+            y_tr=y_tr,
+            X_va=X_va,
+            y_va=y_va,
+            n_bins=int(model_cfg["hmtl"]["n_bins"]),
+            ens_cfg=ens_cfg,
+            train_cfg=train_cfg,
+        )
+        resolved_aux_task = f"bins_fallback(orig={resolved_aux_task})"
+        logger.info("Fallback training completed with avg_score=%.4f", avg_score)
 
     eval_results = evaluate_on_dataset(
         models=models,

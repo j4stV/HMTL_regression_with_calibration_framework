@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import List, Tuple
 
@@ -87,11 +88,8 @@ def fit_ensemble(
         base_seed = train_cfg.seed if train_cfg.seed is not None else 42
         rng = np.random.RandomState(base_seed)
         models: list[HMTLModel] = []
-        # Determine if we should use rounding (check first model)
-        temp_model = build_model_fn()
-        use_rounding = (getattr(temp_model, "aux_task", "bins") == "contrastive")
-        del temp_model
-        y_bins = compute_bins(y_tr, n_bins, use_rounding=use_rounding)
+        # Always use quantile-based bins (balanced bin sizes).
+        y_bins = compute_bins(y_tr, n_bins, use_rounding=False)
         scores: list[float] = []
         
         # Prepare splits if using StratifiedKFold. For small datasets, adapt safely
@@ -222,6 +220,17 @@ def fit_ensemble(
             
             scores.append(sc)
             models.append(m)
+
+            # Early termination for hopeless datasets: if after 3+ models the
+            # average score is terrible, skip remaining models to save time.
+            if i >= 3:
+                avg_so_far = float(np.mean(scores))
+                if not math.isfinite(avg_so_far) or avg_so_far > 50:
+                    logger.warning(
+                        f"Early ensemble termination at model {i+1}/{ens_cfg.n_models}: "
+                        f"avg_score={avg_so_far:.4f}. Remaining models skipped."
+                    )
+                    break
 
             # Save history and plot
             if history_dir is not None:
