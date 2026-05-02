@@ -4,7 +4,7 @@ encoder:
   depth_base: 12
   depth_hmtl: 18
   alpha_dropout: 0.0003
-  residual: true
+  residual: false  # V6: disabled per local A/B (−41…−93% RMSE on mip2016/topo_2_1/abalone). See experiments/ab_research/summary.md
   activation: SELU
   init: lecun
 

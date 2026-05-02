@@ -2,6 +2,47 @@
 
 Прототип фреймворка для иерархического многозадачного обучения (HMTL) с оценкой неопределённости и conformal-калибровкой для регрессии на табличных данных.
 
+## Quickstart (AutoML API)
+
+```python
+from src.hmtl import HMTLRegressor, load
+
+model = HMTLRegressor(preset="fast")          # "fast" | "medium" | "best_quality"
+model.fit(X_train, y_train, target_column="price")
+
+pred                = model.predict(X_test)
+pred, sigma         = model.predict(X_test, return_uncertainty=True)
+lower, upper        = model.predict_interval(X_test, coverage=0.9)
+
+model.save("runs/exp1")
+loaded = load("runs/exp1")                    # inference-only, directory layout
+```
+
+Power users override preset defaults directly: `HMTLRegressor(preset="medium", n_models=15, depth_low=10, depth_high=18, aux_task="bins")`. YAML configs from the legacy flow stay supported via `HMTLRegressor.from_yaml(...)`.
+
+### CLI
+
+```bash
+# Train on a CSV, auto-detect task type, write model to runs/exp1/
+python -m src.hmtl train data.csv --target price --preset medium --output runs/exp1
+
+# Score new data with uncertainty and 90% prediction intervals
+python -m src.hmtl predict runs/exp1 new_data.csv --out preds.csv --with-uncertainty --coverage 0.9
+
+# Inspect what a saved run contains
+python -m src.hmtl info runs/exp1
+python -m src.hmtl report runs/exp1
+```
+
+Presets layered on the same engine:
+| Preset | Cost | Ensemble | Bagging | HPO | Aux task |
+|---|---|---|---|---|---|
+| `fast` | ~1× | 3 | `full_dataset` | — | contrastive |
+| `medium` | ~3–5× | 5–10 | `stratified_kfold` | — | auto-selected |
+| `best_quality` | ~10–30× | 10–20 | `stratified_kfold` | light Optuna | auto-selected |
+
+Size-adaptive defaults (hidden width, depth, batch size, PCA toggle) are derived from the dataset shape — see `src/hmtl/auto.py::summarize_data`.
+
 ## Основные возможности
 
 - **HMTL-архитектура**: Иерархическое многозадачное обучение с вспомогательными задачами (классификация бинов или supervised contrastive learning)
