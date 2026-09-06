@@ -1,0 +1,23 @@
+# Four epochs are enough to check the pipeline, not to assess model quality.
+optimizer:
+  name: adamw
+  lr: 0.001
+  weight_decay: 0.0001
+  grad_clip_norm: 1.0
+training:
+  seed: 42
+  epochs: 4
+  batch_size: 128
+  sigma_reg_weight: 0.0
+  amp:
+    enabled: false
+    eval_enabled: false
+  early_stop:
+    patience: 4
+  adversarial:
+    enabled: false
+conformal:
+  method: symmetric
+logging:
+  mlflow:
+    enabled: false

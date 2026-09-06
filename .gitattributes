@@ -1,0 +1,3 @@
+# Saved reports and datasets should not dominate GitHub's source-language summary.
+experiments/** linguist-generated=true
+data/** linguist-vendored=true

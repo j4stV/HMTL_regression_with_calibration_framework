@@ -1,13 +1,10 @@
 winequality-red.csv
-docs/
 catboost_info/
-tools/
 __pycache__/
 logs/
 yandex-shifts-weather/
 .DS_Store
 .venv
-.gitignore
 .cursor
 .claude
 .cache
@@ -20,3 +17,11 @@ automl_merged
 automl_merged_cb_new
 automl_5sizes_2workers_v6_catboost_new
 tmp/
+
+.pytest_cache/
+*.py[cod]
+.coverage
+htmlcov/
+.env
+.env.*
+!.env.example

@@ -1,0 +1,3 @@
+ensemble:
+  n_models: 2
+  bagging: stratified_bins

@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Optional dependency for the CatBoost benchmark runners.
+catboost>=1.2
